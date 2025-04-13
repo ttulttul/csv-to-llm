@@ -316,7 +316,7 @@ def process_csv_with_claude(
 import argparse # Keep argparse import here for the main block
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process CSV with Claude API using a prompt template.")
+    parser = argparse.ArgumentParser(description="csv-to-llm: Process CSV with Claude API using a prompt template.")
     parser.add_argument("--input", required=True, help="Input CSV file path")
     parser.add_argument("--output", required=True, help="Output CSV file path")
     parser.add_argument("--prompt-template", required=True, help="Prompt template string (e.g., 'Summarize: {text}')")
