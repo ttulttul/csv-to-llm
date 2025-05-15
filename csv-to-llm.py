@@ -151,13 +151,19 @@ def process_csv_with_claude(
         print(f"Error loading CSV: {e}")
         return
 
-    # Extract required columns from the prompt template
+    # Extract required placeholders from the prompt template
     required_columns = re.findall(r'\{([^}]+)\}', prompt_template)
 
-    # Check if all required columns exist in the DataFrame
-    missing_columns = [col for col in required_columns if col not in df.columns]
+    # Split placeholders into named vs positional (COL\d+)
+    positional_cols = [col for col in required_columns if re.fullmatch(r'COL\d+', col)]
+    named_cols = [col for col in required_columns if col not in positional_cols]
+
+    # Validate only the named columns against the dataframe headers
+    missing_columns = [col for col in named_cols if col not in df.columns]
     if missing_columns:
-        raise ValueError(f"Missing required columns in CSV for prompt template: {', '.join(missing_columns)}")
+        raise ValueError(
+            f"Missing required columns in CSV for prompt template: {', '.join(missing_columns)}"
+        )
 
     # Create the output column if it doesn't exist
     if output_column not in df.columns:
@@ -209,9 +215,19 @@ def process_csv_with_claude(
     # Prepare tasks for processing
     for index in rows_to_process_indices:
         row = df.loc[index]
+
+        # Build an augmented dict that includes positional placeholders (COL\d+)
+        row_dict = row.to_dict()
+        for col in positional_cols:
+            col_idx = int(col[3:]) - 1  # COL1 → index 0
+            if 0 <= col_idx < len(row):
+                row_dict[col] = row.iloc[col_idx]
+            else:
+                row_dict[col] = pd.NA  # Out-of-range index
+
         # Prepare data tuple for the worker function
         task_args = (
-            index, row.to_dict(), required_columns, prompt_template, model,
+            index, row_dict, required_columns, prompt_template, model,
             max_tokens, temperature, system_prompt, output_column
         )
         tasks.append(task_args)
@@ -258,11 +274,10 @@ def process_csv_with_claude(
              client = anthropic.Anthropic(api_key=api_key)
 
         for task_args in tasks:
-            index, row_data_dict, _, _, _, _, _, _, _ = task_args # Unpack needed args
-            row_series = pd.Series(row_data_dict) # Recreate series for checks if needed
+            index, row_data_dict, _, _, _, _, _, _, _ = task_args  # Unpack needed args
 
             # Prepare the data for formatting the prompt template
-            format_dict = {col: row_series[col] for col in required_columns}
+            format_dict = {col: row_data_dict.get(col) for col in required_columns}
 
             # Check if any required values for the template are missing in this row
             if any(pd.isna(val) for val in format_dict.values()):
