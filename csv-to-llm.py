@@ -319,7 +319,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="csv-to-llm: Process CSV with Claude API using a prompt template.")
     parser.add_argument("--input", required=True, help="Input CSV file path")
     parser.add_argument("--output", required=True, help="Output CSV file path")
-    parser.add_argument("--prompt-template", required=True, help="Prompt template string (e.g., 'Summarize: {text}')")
+    parser.add_argument("--prompt-template", help="Prompt template string (e.g., 'Summarize: {text}')")
+    parser.add_argument("--prompt-template-file", help="Path to a text file containing the prompt template. Overrides --prompt-template if provided.")
     parser.add_argument("--output-col", required=True, help="Column to store responses")
     parser.add_argument("--system", default="You are a helpful assistant.",
                         help="System prompt for Claude")
@@ -338,10 +339,23 @@ if __name__ == "__main__":
         skip_col_arg = args.skip_rows[0]
         skip_regex_arg = args.skip_rows[1]
 
+    # Determine the prompt template value; file overrides direct string
+    if args.prompt_template_file:
+        try:
+            with open(args.prompt_template_file, "r", encoding="utf-8") as f:
+                prompt_template_value = f.read()
+        except Exception as e:
+            raise ValueError(f"Failed to read prompt template file '{args.prompt_template_file}': {e}")
+    else:
+        prompt_template_value = args.prompt_template
+
+    if prompt_template_value is None:
+        raise ValueError("You must specify either --prompt-template or --prompt-template-file.")
+
     process_csv_with_claude(
         input_csv_path=args.input,
         output_csv_path=args.output,
-        prompt_template=args.prompt_template,
+        prompt_template=prompt_template_value,
         output_column=args.output_col,
         system_prompt=args.system,
         model=args.model,
