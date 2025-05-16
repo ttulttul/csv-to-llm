@@ -5,6 +5,7 @@ import time
 from dotenv import load_dotenv
 import concurrent.futures
 import re
+import logging
 from joblib import Memory
 # argparse import moved down to if __name__ == "__main__": block
 
@@ -146,7 +147,7 @@ def process_csv_with_claude(
     # Read the CSV file
     try:
         df = pd.read_csv(input_csv_path)
-        print(f"Successfully loaded CSV with {len(df)} rows")
+        logging.info(f"Successfully loaded CSV with {len(df)} rows")
     except Exception as e:
         print(f"Error loading CSV: {e}")
         return
@@ -173,7 +174,7 @@ def process_csv_with_claude(
     rows_to_process_indices = df[df[output_column].isna()].index
     total_rows_to_process = len(rows_to_process_indices)
     total_rows = len(df)
-    print(f"Found {total_rows_to_process} rows initially needing processing out of {total_rows} total rows.")
+    logging.info(f"Found {total_rows_to_process} rows initially needing processing out of {total_rows} total rows.")
 
     processed_count = 0
     skipped_count = 0
@@ -186,7 +187,7 @@ def process_csv_with_claude(
             raise ValueError(f"Skip column '{skip_column}' not found in the CSV.")
         try:
             skip_pattern = re.compile(skip_regex)
-            print(f"Will skip rows where column '{skip_column}' matches regex: '{skip_regex}'")
+            logging.info(f"Will skip rows where column '{skip_column}' matches regex: '{skip_regex}'")
         except re.error as e:
             raise ValueError(f"Invalid regex pattern provided for skipping: {e}")
 
@@ -206,10 +207,10 @@ def process_csv_with_claude(
                 rows_to_actually_process_indices.append(index) # Keep this row for processing
 
         if skipped_count > 0:
-            print(f"Skipped {skipped_count} rows based on regex match in column '{skip_column}'.")
+            logging.info(f"Skipped {skipped_count} rows based on regex match in column '{skip_column}'.")
             # Update the list of indices to only those not skipped
             rows_to_process_indices = rows_to_actually_process_indices
-            print(f"Proceeding to process {len(rows_to_process_indices)} remaining rows.")
+            logging.info(f"Proceeding to process {len(rows_to_process_indices)} remaining rows.")
     # --- End Skip Rows Logic ---
 
     # Prepare tasks for processing
@@ -242,7 +243,7 @@ def process_csv_with_claude(
         return
 
     if parallel > 1:
-        print(f"Starting parallel processing with {parallel} workers...")
+        logging.info(f"Starting parallel processing with {parallel} workers...")
         results = {} # Store results keyed by index
         with concurrent.futures.ProcessPoolExecutor(max_workers=parallel) as executor:
             # Submit tasks
@@ -269,7 +270,7 @@ def process_csv_with_claude(
         df.to_csv(output_csv_path, index=False)
 
     else: # Sequential processing (parallel == 1)
-        print("Starting sequential processing...")
+        logging.info("Starting sequential processing...")
         if client is None: # Should have been initialized earlier if parallel==1
              client = anthropic.Anthropic(api_key=api_key)
 
@@ -342,11 +343,17 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="claude-3-7-sonnet-20250219", help="Claude model to use")
     parser.add_argument("--max-tokens", type=int, default=1000, help="Maximum tokens for response")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature setting")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (INFO level)")
     parser.add_argument("--test-first-row", action="store_true", help="Only process the first valid row for testing")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel processes to use (default: 1 for sequential)")
     parser.add_argument("--skip-rows", nargs=2, metavar=('COLUMN', 'REGEX'), help="Column name and regex pattern. Skip processing rows where the column value matches the regex, setting output to empty string.")
 
     args = parser.parse_args()
+
+    # --- Logging Configuration ---
+    log_level = logging.INFO if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(message)s")
+    # --- End Logging Configuration ---
 
     skip_col_arg = None
     skip_regex_arg = None
