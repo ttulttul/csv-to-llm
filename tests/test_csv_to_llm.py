@@ -72,7 +72,7 @@ class TestPromptTemplateProcessing(TestCsvToLlm):
 
 class TestProcessSingleRow(TestCsvToLlm):
     
-    @patch('csv_to_llm.load_dotenv')
+    @patch('csv_to_llm.core.load_dotenv')
     @patch('os.getenv')
     @patch('anthropic.Anthropic')
     def test_process_single_row_success(self, mock_anthropic, mock_getenv, mock_load_dotenv, mock_anthropic_client):
@@ -95,7 +95,7 @@ class TestProcessSingleRow(TestCsvToLlm):
             "response"  # output_column
         )
         
-        with patch('csv_to_llm.call_claude_api_cached') as mock_api:
+        with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.return_value = "Test response"
             index, response, error = csv_to_llm.process_single_row(args_tuple)
             
@@ -103,7 +103,7 @@ class TestProcessSingleRow(TestCsvToLlm):
             assert response == "Test response"
             assert error is None
     
-    @patch('csv_to_llm.load_dotenv')
+    @patch('csv_to_llm.core.load_dotenv')
     @patch('os.getenv')
     def test_process_single_row_missing_api_key(self, mock_getenv, mock_load_dotenv):
         """Test handling of missing API key."""
@@ -124,7 +124,7 @@ class TestProcessSingleRow(TestCsvToLlm):
         args_tuple = (0, row_data, ['name', 'description'], "{name}: {description}", 
                       "model", 1000, 0.7, "system", "output")
         
-        with patch('csv_to_llm.load_dotenv'), \
+        with patch('csv_to_llm.core.load_dotenv'), \
              patch('os.getenv', return_value="test_key"), \
              patch('anthropic.Anthropic'):
             index, response, error = csv_to_llm.process_single_row(args_tuple)
@@ -141,7 +141,7 @@ class TestProcessSingleRow(TestCsvToLlm):
         args_tuple = (0, row_data, ['name', 'wrong_col'], "{name}: {wrong_col}", 
                       "model", 1000, 0.7, "system", "output")
         
-        with patch('csv_to_llm.load_dotenv'), \
+        with patch('csv_to_llm.core.load_dotenv'), \
              patch('os.getenv', return_value="test_key"), \
              patch('anthropic.Anthropic'):
             index, response, error = csv_to_llm.process_single_row(args_tuple)
@@ -160,7 +160,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         """Test basic CSV processing functionality."""
         mock_anthropic.return_value = mock_anthropic_client
         
-        with patch('csv_to_llm.call_claude_api_cached') as mock_api:
+        with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.return_value = "Processed response"
             
             csv_to_llm.process_csv_with_claude(
@@ -183,7 +183,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
     def test_missing_api_key_error(self, sample_csv, output_csv_path):
         """Test error when API key is missing."""
         # Clear all environment variables completely
-        with patch('csv_to_llm.load_dotenv'), \
+        with patch('csv_to_llm.core.load_dotenv'), \
              patch('os.getenv', return_value=None):
             with pytest.raises(ValueError, match="ANTHROPIC_API_KEY not found"):
                 csv_to_llm.process_csv_with_claude(
@@ -223,7 +223,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         """Test row skipping based on regex pattern."""
         mock_anthropic.return_value = mock_anthropic_client
         
-        with patch('csv_to_llm.call_claude_api_cached') as mock_api:
+        with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.return_value = "Processed response"
             
             csv_to_llm.process_csv_with_claude(
@@ -257,7 +257,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         df.to_csv(csv_path, index=False)
         
         with patch('anthropic.Anthropic'), \
-             patch('csv_to_llm.call_claude_api_cached') as mock_api:
+             patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.return_value = "Processed"
             
             csv_to_llm.process_csv_with_claude(
@@ -327,7 +327,7 @@ class TestParallelProcessing(TestCsvToLlm):
         """Test parallel processing mode."""
         mock_anthropic.return_value = mock_anthropic_client
         
-        with patch('csv_to_llm.call_claude_api_cached') as mock_api:
+        with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.return_value = "Parallel response"
             
             csv_to_llm.process_csv_with_claude(
@@ -378,7 +378,7 @@ class TestErrorHandling(TestCsvToLlm):
         mock_client = Mock()
         mock_anthropic.return_value = mock_client
         
-        with patch('csv_to_llm.call_claude_api_cached') as mock_api:
+        with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.side_effect = Exception("API Error")
             
             csv_to_llm.process_csv_with_claude(
@@ -439,7 +439,7 @@ class TestIntegrationScenarios(TestCsvToLlm):
         })
         df.to_csv(csv_path, index=False)
         
-        with patch('csv_to_llm.call_claude_api_cached') as mock_api:
+        with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.return_value = "New response"
             
             csv_to_llm.process_csv_with_claude(
