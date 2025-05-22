@@ -8,13 +8,7 @@ import re
 import sys
 
 # Import the module under test
-import importlib.util
-
-# Load the csv-to-llm.py module
-spec = importlib.util.spec_from_file_location("csv_to_llm", "csv-to-llm.py")
-csv_to_llm = importlib.util.module_from_spec(spec)
-sys.modules["csv_to_llm"] = csv_to_llm
-spec.loader.exec_module(csv_to_llm)
+from csv_to_llm import core as csv_to_llm
 
 
 class TestCsvToLlm:
