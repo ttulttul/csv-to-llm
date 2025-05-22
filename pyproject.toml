@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "csv-to-llm"
+version = "0.1.0"
+description = "Process CSV files with Claude API using prompt templates"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+keywords = ["csv", "llm", "claude", "api", "batch-processing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "pandas>=2.0.0",
+    "anthropic>=0.20.0",
+    "python-dotenv>=1.0.0",
+    "joblib>=1.2.0",
+]
+
+[project.scripts]
+csv-to-llm = "csv_to_llm.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/csv-to-llm"
+Repository = "https://github.com/yourusername/csv-to-llm"
+Issues = "https://github.com/yourusername/csv-to-llm/issues"
