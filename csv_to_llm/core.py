@@ -7,6 +7,11 @@ import concurrent.futures
 import re
 import logging
 from joblib import Memory
+from tqdm import tqdm
+from colorama import Fore, Style, init
+
+# Initialize colorama for cross-platform colored output
+init(autoreset=True)
 
 # --- Joblib Cache Setup ---
 # Define cache directory (you might want to make this configurable or use a temporary dir)
@@ -93,8 +98,7 @@ def process_single_row(args_tuple):
         return index, response, None # index, result, error=None
 
     except Exception as e:
-        # Log the specific prompt that caused the error if possible
-        print(f"API Error during cached call for row {index + 1}. Prompt snippet: '{prompt_value[:50]}...'. Error: {e}")
+        # Return error without verbose logging
         return index, None, f"API Error: {e}" # index, result=None, error
 
 
@@ -146,9 +150,9 @@ def process_csv_with_claude(
     # Read the CSV file
     try:
         df = pd.read_csv(input_csv_path)
-        logging.info(f"Successfully loaded CSV with {len(df)} rows")
+        print(f"{Fore.GREEN}✓{Style.RESET_ALL} Successfully loaded CSV with {Fore.CYAN}{len(df)}{Style.RESET_ALL} rows")
     except Exception as e:
-        print(f"Error loading CSV: {e}")
+        print(f"{Fore.RED}✗{Style.RESET_ALL} Error loading CSV: {e}")
         return
 
     # Extract required placeholders from the prompt template
@@ -173,7 +177,7 @@ def process_csv_with_claude(
     rows_to_process_indices = df[df[output_column].isna()].index
     total_rows_to_process = len(rows_to_process_indices)
     total_rows = len(df)
-    logging.info(f"Found {total_rows_to_process} rows initially needing processing out of {total_rows} total rows.")
+    print(f"{Fore.YELLOW}📊{Style.RESET_ALL} Found {Fore.CYAN}{total_rows_to_process}{Style.RESET_ALL} rows needing processing out of {Fore.CYAN}{total_rows}{Style.RESET_ALL} total rows")
 
     processed_count = 0
     skipped_count = 0
@@ -186,7 +190,7 @@ def process_csv_with_claude(
             raise ValueError(f"Skip column '{skip_column}' not found in the CSV.")
         try:
             skip_pattern = re.compile(skip_regex)
-            logging.info(f"Will skip rows where column '{skip_column}' matches regex: '{skip_regex}'")
+            print(f"{Fore.YELLOW}⚠️{Style.RESET_ALL} Will skip rows where column '{skip_column}' matches regex: '{skip_regex}'")
         except re.error as e:
             raise ValueError(f"Invalid regex pattern provided for skipping: {e}")
 
@@ -206,10 +210,10 @@ def process_csv_with_claude(
                 rows_to_actually_process_indices.append(index) # Keep this row for processing
 
         if skipped_count > 0:
-            logging.info(f"Skipped {skipped_count} rows based on regex match in column '{skip_column}'.")
+            print(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipped {Fore.CYAN}{skipped_count}{Style.RESET_ALL} rows based on regex match")
             # Update the list of indices to only those not skipped
             rows_to_process_indices = rows_to_actually_process_indices
-            logging.info(f"Proceeding to process {len(rows_to_process_indices)} remaining rows.")
+            print(f"{Fore.GREEN}🚀{Style.RESET_ALL} Proceeding to process {Fore.CYAN}{len(rows_to_process_indices)}{Style.RESET_ALL} remaining rows")
     # --- End Skip Rows Logic ---
 
     # Prepare tasks for processing
@@ -234,97 +238,103 @@ def process_csv_with_claude(
         
         # Handle test_first_row: only prepare the first valid task
         if test_first_row:
-             print("Test mode: Preparing only the first valid row for processing.")
+             print(f"{Fore.CYAN}🧪{Style.RESET_ALL} Test mode: Preparing only the first valid row for processing")
              break # Only add the first task
 
     if not tasks:
-        print("No rows require processing.")
+        print(f"{Fore.GREEN}✓{Style.RESET_ALL} No rows require processing")
         return
 
     if parallel > 1:
-        logging.info(f"Starting parallel processing with {parallel} workers...")
+        print(f"{Fore.BLUE}⚡{Style.RESET_ALL} Starting parallel processing with {Fore.CYAN}{parallel}{Style.RESET_ALL} workers")
         results = {} # Store results keyed by index
         with concurrent.futures.ProcessPoolExecutor(max_workers=parallel) as executor:
             # Submit tasks
             future_to_index = {executor.submit(process_single_row, task): task[0] for task in tasks}
 
-            for future in concurrent.futures.as_completed(future_to_index):
-                index = future_to_index[future]
-                try:
-                    idx, response, error = future.result()
-                    if error:
-                        print(f"Error processing row {idx + 1}: {error}")
-                        # Optionally store error message in the output column or handle differently
-                        df.at[idx, output_column] = f"ERROR: {error}" 
-                    else:
-                        df.at[idx, output_column] = response
-                        processed_count += 1
-                        print(f"Processed row {idx + 1}/{total_rows} (Completed: {processed_count}/{len(tasks)})")
-                except Exception as exc:
-                    print(f'Row {index + 1} generated an exception: {exc}')
-                    df.at[index, output_column] = f"ERROR: Future execution failed - {exc}"
+            # Use tqdm for progress tracking
+            with tqdm(total=len(tasks), desc="Processing rows", unit="row", 
+                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+                for future in concurrent.futures.as_completed(future_to_index):
+                    index = future_to_index[future]
+                    try:
+                        idx, response, error = future.result()
+                        if error:
+                            tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing row {idx + 1}: {error}")
+                            df.at[idx, output_column] = f"ERROR: {error}" 
+                        else:
+                            df.at[idx, output_column] = response
+                            processed_count += 1
+                    except Exception as exc:
+                        tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Row {index + 1} generated an exception: {exc}")
+                        df.at[index, output_column] = f"ERROR: Future execution failed - {exc}"
+                    
+                    pbar.update(1)
 
         # Save the entire DataFrame once after all parallel tasks are done
-        print("Parallel processing finished. Saving results...")
+        print(f"{Fore.GREEN}💾{Style.RESET_ALL} Parallel processing finished. Saving results...")
         df.to_csv(output_csv_path, index=False)
 
     else: # Sequential processing (parallel == 1)
-        logging.info("Starting sequential processing...")
+        print(f"{Fore.BLUE}🔄{Style.RESET_ALL} Starting sequential processing")
         if client is None: # Should have been initialized earlier if parallel==1
              client = anthropic.Anthropic(api_key=api_key)
 
-        for task_args in tasks:
-            index, row_data_dict, _, _, _, _, _, _, _ = task_args  # Unpack needed args
+        # Use tqdm for progress tracking
+        with tqdm(tasks, desc="Processing rows", unit="row", 
+                 bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+            for task_args in pbar:
+                index, row_data_dict, _, _, _, _, _, _, _ = task_args  # Unpack needed args
 
-            # Prepare the data for formatting the prompt template
-            format_dict = {col: row_data_dict.get(col) for col in required_columns}
+                # Prepare the data for formatting the prompt template
+                format_dict = {col: row_data_dict.get(col) for col in required_columns}
 
-            # Check if any required values for the template are missing in this row
-            if any(pd.isna(val) for val in format_dict.values()):
-                 print(f"Skipping row {index+1}/{total_rows} (missing data for prompt template)")
-                 continue
+                # Check if any required values for the template are missing in this row
+                if any(pd.isna(val) for val in format_dict.values()):
+                     tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {index+1} (missing data for prompt template)")
+                     continue
 
-            # Format the prompt using the template and row data
-            try:
-                prompt_value = prompt_template.format(**format_dict)
-            except KeyError as e:
-                print(f"Skipping row {index+1}/{total_rows} due to formatting error (likely missing column in template): {e}")
-                continue
+                # Format the prompt using the template and row data
+                try:
+                    prompt_value = prompt_template.format(**format_dict)
+                except KeyError as e:
+                    tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {index+1} due to formatting error: {e}")
+                    continue
 
-            print(f"Processing row {index+1}/{total_rows}: Prompt starts with '{prompt_value[:50]}...'")
+                # Update progress bar description with current row
+                pbar.set_postfix_str(f"Row {index+1}")
 
-            try:
-                # Call Claude API via the cached wrapper (using the single client)
-                response = call_claude_api_cached(
-                    client=client, # Pass client, but it's ignored by cache
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    system_prompt=system_prompt,
-                    prompt_value=prompt_value
-                )
-                
-                # Save response to the dataframe
-                df.at[index, output_column] = response
-                processed_count += 1
-                print(f"Processed row {index+1}/{total_rows}")
-                
-                # Save progress after each successful API call (only in sequential mode)
-                df.to_csv(output_csv_path, index=False)
+                try:
+                    # Call Claude API via the cached wrapper (using the single client)
+                    response = call_claude_api_cached(
+                        client=client, # Pass client, but it's ignored by cache
+                        model=model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        system_prompt=system_prompt,
+                        prompt_value=prompt_value
+                    )
+                    
+                    # Save response to the dataframe
+                    df.at[index, output_column] = response
+                    processed_count += 1
+                    
+                    # Save progress after each successful API call (only in sequential mode)
+                    df.to_csv(output_csv_path, index=False)
 
-                # If testing the first row, break after successful processing (already handled by task list size)
-                if test_first_row:
-                    print("Test mode: Processed first valid row. Exiting.")
-                    break # Exit loop after first task
+                    # If testing the first row, break after successful processing (already handled by task list size)
+                    if test_first_row:
+                        tqdm.write(f"{Fore.CYAN}🧪{Style.RESET_ALL} Test mode: Processed first valid row. Exiting")
+                        break # Exit loop after first task
 
-            except Exception as e:
-                print(f"Error processing row {index+1}: {e}")
-                df.at[index, output_column] = f"ERROR: {e}"
-                # Save progress even if there was an error (only in sequential mode)
-                df.to_csv(output_csv_path, index=False)
+                except Exception as e:
+                    tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing row {index+1}: {e}")
+                    df.at[index, output_column] = f"ERROR: {e}"
+                    # Save progress even if there was an error (only in sequential mode)
+                    df.to_csv(output_csv_path, index=False)
 
-        print("Sequential processing finished.")
+        print(f"{Fore.GREEN}✓{Style.RESET_ALL} Sequential processing finished")
 
     processed_rows_final = len(df[df[output_column].notna()]) - (total_rows - total_rows_to_process) # Count non-NA in output col minus initially skipped
-    print(f"Completed processing. Total rows with output: {processed_rows_final}/{total_rows}")
-    print(f"Results saved to {output_csv_path}")
+    print(f"\n{Fore.GREEN}🎉{Style.RESET_ALL} Completed processing. Total rows with output: {Fore.CYAN}{processed_rows_final}/{total_rows}{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}💾{Style.RESET_ALL} Results saved to {Fore.CYAN}{output_csv_path}{Style.RESET_ALL}")

@@ -1,11 +1,18 @@
 import argparse
 import logging
+from colorama import Fore, Style, init
 from .core import process_csv_with_claude
+
+# Initialize colorama for cross-platform colored output
+init(autoreset=True)
 
 
 def main():
     """Main CLI entry point for csv-to-llm."""
-    parser = argparse.ArgumentParser(description="csv-to-llm: Process CSV with Claude API using a prompt template.")
+    parser = argparse.ArgumentParser(
+        description=f"{Fore.BLUE}csv-to-llm{Style.RESET_ALL}: Process CSV with Claude API using a prompt template.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--input", required=True, help="Input CSV file path")
     parser.add_argument("--output", required=True, help="Output CSV file path")
     parser.add_argument("--prompt-template", help="Prompt template string (e.g., 'Summarize: {text}')")
@@ -27,6 +34,9 @@ def main():
     log_level = logging.INFO if args.verbose else logging.WARNING
     logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(message)s")
     # --- End Logging Configuration ---
+    
+    # Welcome message
+    print(f"{Fore.BLUE}🚀{Style.RESET_ALL} Starting {Fore.CYAN}csv-to-llm{Style.RESET_ALL} processing...")
 
     skip_col_arg = None
     skip_regex_arg = None
@@ -40,11 +50,13 @@ def main():
             with open(args.prompt_template_file, "r", encoding="utf-8") as f:
                 prompt_template_value = f.read()
         except Exception as e:
+            print(f"{Fore.RED}✗{Style.RESET_ALL} Failed to read prompt template file '{args.prompt_template_file}': {e}")
             raise ValueError(f"Failed to read prompt template file '{args.prompt_template_file}': {e}")
     else:
         prompt_template_value = args.prompt_template
 
     if prompt_template_value is None:
+        print(f"{Fore.RED}✗{Style.RESET_ALL} You must specify either --prompt-template or --prompt-template-file")
         raise ValueError("You must specify either --prompt-template or --prompt-template-file.")
 
     process_csv_with_claude(
