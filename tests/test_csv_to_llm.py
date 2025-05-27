@@ -216,7 +216,18 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
                     prompt_template="Test: {nonexistent_column}",
                     output_column="response"
                 )
-    
+
+    def test_prompt_template_without_placeholders(self, sample_csv, output_csv_path):
+        """Test error when template lacks any placeholders."""
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test_key'}):
+            with pytest.raises(ValueError, match="Prompt template must contain at least one column identifier"):
+                csv_to_llm.process_csv_with_claude(
+                    input_csv_path=sample_csv,
+                    output_csv_path=output_csv_path,
+                    prompt_template="This template has no placeholders at all",
+                    output_column="response"
+                )
+
     @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test_key'})
     @patch('anthropic.Anthropic')
     def test_skip_rows_functionality(self, mock_anthropic, sample_csv, output_csv_path, mock_anthropic_client):
