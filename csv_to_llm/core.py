@@ -56,6 +56,8 @@ def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt
         return response_text
     else:
         # Log or handle the unexpected response structure
+        warning_msg = f"Warning: Unexpected API response structure. Content: {message.content}"
+        print(warning_msg)
         logger.warning("Unexpected API response structure. Content: %s", message.content)
         return ""
 # --- End Cached API Call ---
