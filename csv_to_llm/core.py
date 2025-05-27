@@ -13,6 +13,9 @@ from colorama import Fore, Style, init
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
 
+# Module-level logger
+logger = logging.getLogger(__name__)
+
 # --- Joblib Cache Setup ---
 # Define cache directory (you might want to make this configurable or use a temporary dir)
 cachedir = './claude_cache' 
@@ -26,6 +29,9 @@ def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt
     Wrapper function to call the Claude API, designed for caching with joblib.
     The 'client' object is passed but ignored by the cache.
     """
+    logger.info("Sending request to Claude model '%s' with system prompt '%s'. Prompt: %s",
+                model, system_prompt, prompt_value)
+
     message = client.messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -45,10 +51,12 @@ def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt
     )
     # Extract response content safely
     if message.content and hasattr(message.content[0], 'text'):
-        return message.content[0].text
+        response_text = message.content[0].text
+        logger.info("Received response from Claude. Response: %s", response_text)
+        return response_text
     else:
         # Log or handle the unexpected response structure
-        print(f"Warning: Unexpected API response structure. Content: {message.content}")
+        logger.warning("Unexpected API response structure. Content: %s", message.content)
         return ""
 # --- End Cached API Call ---
 
