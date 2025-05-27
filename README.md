@@ -11,6 +11,7 @@ A Python package that processes CSV files by sending templated prompts to Claude
 - **Flexible Column References**: Support both named columns (`{column_name}`) and positional columns (`{COL1}`, `{COL2}`, etc.)
 - **Row Skipping**: Skip rows based on regex patterns
 - **Resume Support**: Continue processing from where you left off
+- **Embeddings Generation**: Generate text embeddings with `--embeddings`, using providers such as OpenAI
 
 ## Installation
 
@@ -108,6 +109,9 @@ csv-to-llm \
 - `--verbose`: Enable verbose logging
 - `--test-first-row`: Process only the first row for testing
 - `--skip-rows`: Skip rows matching regex pattern in specified column
+- `--embeddings`: Generate embeddings instead of Claude responses
+- `--embeddings-provider`: Embedding model provider (default: OpenAI)
+- `--embeddings-model`: Embedding model name (default: text-embedding-3-large)
 
 ## Python API
 
