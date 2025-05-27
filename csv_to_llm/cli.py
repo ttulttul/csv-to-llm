@@ -1,7 +1,8 @@
 import argparse
 import logging
 from colorama import Fore, Style, init
-from .core import process_csv_with_claude
+from .core import process_csv_with_claude, process_csv_with_embeddings
+from .embeddings import list_available_embedding_models
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -27,6 +28,25 @@ def main():
     parser.add_argument("--test-first-row", action="store_true", help="Only process the first valid row for testing")
     parser.add_argument("--parallel", type=int, default=1, help="Number of parallel processes to use (default: 1 for sequential)")
     parser.add_argument("--skip-rows", nargs=2, metavar=('COLUMN', 'REGEX'), help="Column name and regex pattern. Skip processing rows where the column value matches the regex, setting output to empty string.")
+
+    # --- Embedding specific options ---
+    provider_choices = list(list_available_embedding_models().keys())
+    parser.add_argument(
+        "--embeddings",
+        action="store_true",
+        help="Generate embeddings (instead of Claude responses) based on the prompt template",
+    )
+    parser.add_argument(
+        "--embeddings-provider",
+        default="OpenAI",
+        choices=provider_choices,
+        help="Embedding model provider",
+    )
+    parser.add_argument(
+        "--embeddings-model",
+        default="text-embedding-3-large",
+        help="Embedding model name (see list_available_embedding_models())",
+    )
 
     args = parser.parse_args()
 
@@ -59,20 +79,33 @@ def main():
         print(f"{Fore.RED}✗{Style.RESET_ALL} You must specify either --prompt-template or --prompt-template-file")
         raise ValueError("You must specify either --prompt-template or --prompt-template-file.")
 
-    process_csv_with_claude(
-        input_csv_path=args.input,
-        output_csv_path=args.output,
-        prompt_template=prompt_template_value,
-        output_column=args.output_col,
-        system_prompt=args.system,
-        model=args.model,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
-        test_first_row=args.test_first_row,
-        parallel=args.parallel,
-        skip_column=skip_col_arg,
-        skip_regex=skip_regex_arg
-    )
+    if args.embeddings:
+        process_csv_with_embeddings(
+            input_csv_path=args.input,
+            output_csv_path=args.output,
+            prompt_template=prompt_template_value,
+            output_column=args.output_col,
+            embeddings_provider=args.embeddings_provider,
+            embeddings_model=args.embeddings_model,
+            test_first_row=args.test_first_row,
+            skip_column=skip_col_arg,
+            skip_regex=skip_regex_arg,
+        )
+    else:
+        process_csv_with_claude(
+            input_csv_path=args.input,
+            output_csv_path=args.output,
+            prompt_template=prompt_template_value,
+            output_column=args.output_col,
+            system_prompt=args.system,
+            model=args.model,
+            max_tokens=args.max_tokens,
+            temperature=args.temperature,
+            test_first_row=args.test_first_row,
+            parallel=args.parallel,
+            skip_column=skip_col_arg,
+            skip_regex=skip_regex_arg,
+        )
 
 
 if __name__ == "__main__":

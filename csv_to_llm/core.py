@@ -9,6 +9,7 @@ import logging
 from joblib import Memory
 from tqdm import tqdm
 from colorama import Fore, Style, init
+from .embeddings import get_embedding
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -353,3 +354,108 @@ def process_csv_with_claude(
     processed_rows_final = len(df[df[output_column].notna()]) - (total_rows - total_rows_to_process) # Count non-NA in output col minus initially skipped
     print(f"\n{Fore.GREEN}🎉{Style.RESET_ALL} Completed processing. Total rows with output: {Fore.CYAN}{processed_rows_final}/{total_rows}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}💾{Style.RESET_ALL} Results saved to {Fore.CYAN}{output_csv_path}{Style.RESET_ALL}")
+# --------------------------------------------------------------------------- #
+# Embeddings processing                                                       #
+# --------------------------------------------------------------------------- #
+def process_csv_with_embeddings(
+    input_csv_path,
+    output_csv_path,
+    prompt_template,
+    output_column,
+    embeddings_provider="OpenAI",
+    embeddings_model="text-embedding-3-large",
+    test_first_row=False,
+    skip_column=None,
+    skip_regex=None,
+):
+    """
+    Generate embeddings for each row using `prompt_template` and store them
+    (as JSON serialised lists) in `output_column`.
+
+    The implementation is deliberately sequential and cached-agnostic for now.
+    """
+    import json
+
+    # Read CSV
+    try:
+        df = pd.read_csv(input_csv_path)
+        print(f"{Fore.GREEN}✓{Style.RESET_ALL} Loaded CSV with {Fore.CYAN}{len(df)}{Style.RESET_ALL} rows")
+    except Exception as e:
+        print(f"{Fore.RED}✗{Style.RESET_ALL} Error loading CSV: {e}")
+        return
+
+    required_columns = re.findall(r"\{([^}]+)\}", prompt_template)
+    if not required_columns:
+        raise ValueError("Prompt template requires at least one {column} placeholder.")
+
+    # Validate columns (named placeholders only)
+    positional_cols = [c for c in required_columns if re.fullmatch(r"COL\\d+", c)]
+    named_cols = [c for c in required_columns if c not in positional_cols]
+    missing = [c for c in named_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns in CSV: {', '.join(missing)}")
+
+    if output_column not in df.columns:
+        df[output_column] = pd.NA
+
+    rows_to_process = df[df[output_column].isna()].index
+    total = len(rows_to_process)
+    if total == 0:
+        print(f"{Fore.GREEN}✓{Style.RESET_ALL} No rows require processing")
+        return
+
+    # Skip logic (reuse from Claude flow, simplified)
+    if skip_column and skip_regex:
+        if skip_column not in df.columns:
+            raise ValueError(f"Skip column '{skip_column}' not found in CSV.")
+        pattern = re.compile(skip_regex)
+        keep = []
+        skipped = 0
+        for idx in rows_to_process:
+            val = df.at[idx, skip_column]
+            if pd.isna(val) or not pattern.search(str(val)):
+                keep.append(idx)
+            else:
+                df.at[idx, output_column] = ""
+                skipped += 1
+        rows_to_process = keep
+        if skipped:
+            print(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipped {skipped} rows via regex")
+
+    # Sequential embedding generation
+    for count, idx in enumerate(rows_to_process, start=1):
+        row = df.loc[idx]
+        row_dict = row.to_dict()
+
+        # Add positional helpers
+        for col in positional_cols:
+            col_idx = int(col[3:]) - 1
+            row_dict[col] = row.iloc[col_idx] if 0 <= col_idx < len(row) else pd.NA
+
+        try:
+            prompt_value = prompt_template.format(**row_dict)
+        except Exception as e:
+            print(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Row {idx+1} formatting error: {e}")
+            continue
+
+        try:
+            embedding_vec = get_embedding(
+                prompt_value,
+                model_provider=embeddings_provider,
+                model=embeddings_model,
+            )
+            df.at[idx, output_column] = json.dumps(embedding_vec)
+        except Exception as e:
+            print(f"{Fore.RED}✗{Style.RESET_ALL} Error embedding row {idx+1}: {e}")
+            df.at[idx, output_column] = f"ERROR: {e}"
+
+        # Early exit for test mode
+        if test_first_row:
+            print(f"{Fore.CYAN}🧪{Style.RESET_ALL} Test mode: processed first row")
+            break
+
+        if count % 10 == 0 or count == len(rows_to_process):
+            print(f"{Fore.BLUE}🔄{Style.RESET_ALL} {count}/{len(rows_to_process)} rows embedded")
+
+    df.to_csv(output_csv_path, index=False)
+    print(f"{Fore.GREEN}💾{Style.RESET_ALL} Saved embeddings to {Fore.CYAN}{output_csv_path}{Style.RESET_ALL}")
