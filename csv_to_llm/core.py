@@ -165,6 +165,11 @@ def process_csv_with_claude(
 
     # Extract required placeholders from the prompt template
     required_columns = re.findall(r'\{([^}]+)\}', prompt_template)
+    if not required_columns:
+        raise ValueError(
+            "Prompt template must contain at least one column identifier enclosed in curly braces, "
+            "e.g., {column_name}. None were found."
+        )
 
     # Split placeholders into named vs positional (COL\d+)
     positional_cols = [col for col in required_columns if re.fullmatch(r'COL\d+', col)]
