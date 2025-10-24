@@ -6,9 +6,20 @@ from dotenv import load_dotenv
 import concurrent.futures
 import re
 import logging
+import importlib
+import importlib.util
+import inspect
+import hashlib
+import json
+import threading
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Optional, Type, Tuple, List, Callable, Dict, Any, Iterable
 from joblib import Memory
 from tqdm import tqdm
 from colorama import Fore, Style, init
+from openai import OpenAI
+from pydantic import BaseModel
 from .embeddings import get_embedding
 
 # Initialize colorama for cross-platform colored output
@@ -23,13 +34,237 @@ cachedir = './claude_cache'
 memory = Memory(cachedir, verbose=0)
 # --- End Cache Setup ---
 
-# --- Cached API Call ---
-@memory.cache(ignore=['client']) # Ignore the client object for caching purposes
-def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
-    """
-    Wrapper function to call the Claude API, designed for caching with joblib.
-    The 'client' object is passed but ignored by the cache.
-    """
+DEFAULT_ANTHROPIC_MODEL = "sonnet-4.5"
+DEFAULT_OPENAI_MODEL = "gpt-5"
+
+_thread_local_clients = threading.local()
+
+
+@dataclass(frozen=True)
+class StructuredOutputConfig:
+    """Runtime configuration for Pydantic-based structured outputs."""
+
+    model_reference: str
+    class_name: Optional[str]
+    output_field: Optional[str]
+    llm_model: str
+    max_output_tokens: int
+    temperature: float
+    system_prompt: str
+
+
+@dataclass
+class RowProcessingArgs:
+    """Data passed to worker processes/sequential loop for each row."""
+
+    index: int
+    row_data: dict
+    required_columns: List[str]
+    prompt_template: str
+    model: str
+    max_tokens: int
+    temperature: float
+    system_prompt: str
+    output_column: str
+    structured_config: Optional[StructuredOutputConfig]
+    max_retries: int
+    column_prefix: Optional[str]
+
+
+def _get_thread_local_openai_client() -> OpenAI:
+    """Fetch (or create) a thread-local OpenAI client for reuse."""
+
+    client = getattr(_thread_local_clients, "openai_client", None)
+    if client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not found in environment variables")
+        client = OpenAI(api_key=api_key)
+        _thread_local_clients.openai_client = client
+    return client
+
+
+def _get_thread_local_anthropic_client() -> anthropic.Anthropic:
+    """Fetch (or create) a thread-local Anthropic client for reuse."""
+
+    client = getattr(_thread_local_clients, "anthropic_client", None)
+    if client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY not found in environment variables")
+        client = anthropic.Anthropic(api_key=api_key)
+        _thread_local_clients.anthropic_client = client
+    return client
+
+
+def _normalize_model_reference(model_reference: str) -> str:
+    """Ensure file-based references are absolute to keep cache keys stable."""
+
+    if os.path.exists(model_reference):
+        return os.path.abspath(model_reference)
+    return model_reference
+
+
+def _split_model_reference(model_reference: str, explicit_class_name: Optional[str]) -> Tuple[str, Optional[str]]:
+    """Break `path:ClassName` references into components and enforce overrides."""
+
+    reference = model_reference
+    class_name = explicit_class_name
+
+    if ':' in model_reference:
+        reference, embedded_class = model_reference.rsplit(':', 1)
+        if class_name and class_name != embedded_class:
+            raise ValueError(
+                "Conflicting class definitions supplied via --pydantic-model and --pydantic-model-class."
+            )
+        class_name = class_name or embedded_class
+
+    normalized_reference = _normalize_model_reference(reference.strip())
+    return normalized_reference, class_name
+
+
+def _import_module_from_reference(reference: str):
+    """Import a module either from a filesystem path or dot-path string."""
+
+    if os.path.exists(reference):
+        module_name = f"csv_to_llm_user_model_{hashlib.sha1(reference.encode('utf-8')).hexdigest()}"
+        spec = importlib.util.spec_from_file_location(module_name, reference)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to load module from '{reference}'")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    return importlib.import_module(reference)
+
+
+def _find_pydantic_model_class(module, class_name: Optional[str]) -> Type[BaseModel]:
+    """Locate the desired BaseModel subclass inside an imported module."""
+
+    candidates = [
+        obj for obj in vars(module).values()
+        if inspect.isclass(obj) and issubclass(obj, BaseModel)
+    ]
+
+    if class_name:
+        for candidate in candidates:
+            if candidate.__name__ == class_name:
+                return candidate
+        raise ValueError(
+            f"Pydantic model '{class_name}' was not found in module '{module.__name__}'"
+        )
+
+    if not candidates:
+        raise ValueError("No Pydantic BaseModel subclasses found in the provided module")
+
+    if len(candidates) > 1:
+        raise ValueError(
+            "Multiple Pydantic BaseModel subclasses found. Specify --pydantic-model-class explicitly."
+        )
+
+    return candidates[0]
+
+
+@lru_cache(maxsize=None)
+def _get_pydantic_model_class(reference: str, class_name: Optional[str]) -> Type[BaseModel]:
+    """Import and cache the requested Pydantic BaseModel."""
+
+    module = _import_module_from_reference(reference)
+    return _find_pydantic_model_class(module, class_name)
+
+
+def build_structured_output_config(
+    model_reference: str,
+    model_class_name: Optional[str],
+    output_field: Optional[str],
+    llm_model: str,
+    max_tokens: int,
+    temperature: float,
+    system_prompt: str,
+) -> StructuredOutputConfig:
+    """Validate user-supplied structured output arguments and build config."""
+
+    if not model_reference:
+        raise ValueError("--pydantic-model must point to a valid Python module or file")
+
+    normalized_reference, resolved_class = _split_model_reference(model_reference, model_class_name)
+    config = StructuredOutputConfig(
+        model_reference=normalized_reference,
+        class_name=resolved_class,
+        output_field=output_field,
+        llm_model=llm_model,
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+        system_prompt=system_prompt,
+    )
+
+    model_cls = _get_pydantic_model_class(config.model_reference, config.class_name)
+    if output_field and output_field not in model_cls.model_fields:
+        raise ValueError(
+            f"Field '{output_field}' not found on Pydantic model '{model_cls.__name__}'"
+        )
+
+    return config
+
+
+def call_openai_structured(prompt_value: str, structured_config: StructuredOutputConfig, openai_client: Optional[OpenAI] = None) -> str:
+    """Call OpenAI with Structured Outputs enabled and return the parsed BaseModel."""
+
+    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
+    client = openai_client or OpenAI()
+
+    response = client.responses.parse(
+        model=structured_config.llm_model,
+        input=[
+            {"role": "system", "content": structured_config.system_prompt},
+            {"role": "user", "content": prompt_value},
+        ],
+        text_format=model_cls,
+        temperature=structured_config.temperature,
+        max_output_tokens=structured_config.max_output_tokens,
+    )
+
+    parsed = response.output_parsed
+    if parsed is None:
+        raise RuntimeError("Structured output parsing failed: no parsed content returned")
+
+    return parsed
+
+
+def _serialize_structured_value(value: Any) -> str:
+    """Convert arbitrary structured field data to a CSV-friendly string."""
+
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def invoke_with_retries(max_retries: int, request_fn: Callable[[int], str]) -> str:
+    """Execute request_fn with retry semantics. request_fn receives the attempt index."""
+
+    attempts = max(max_retries, 0) + 1
+    last_error: Optional[Exception] = None
+
+    for attempt in range(attempts):
+        try:
+            response = request_fn(attempt)
+            if response is None or (isinstance(response, str) and not response.strip()):
+                raise RuntimeError("LLM returned an empty response")
+            return response
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        f"LLM call failed after {attempts} attempts: {last_error}"
+    )
+
+def _call_claude_api(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    """Internal helper that performs the actual Anthropic API call."""
+
     logger.info("Sending request to Claude model '%s' with system prompt '%s'. Prompt: %s",
                 model, system_prompt, prompt_value)
 
@@ -50,67 +285,151 @@ def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt
             }
         ]
     )
-    # Extract response content safely
     if message.content and hasattr(message.content[0], 'text'):
         response_text = message.content[0].text
         logger.info("Received response from Claude. Response: %s", response_text)
         return response_text
-    else:
-        # Log or handle the unexpected response structure
-        warning_msg = f"Warning: Unexpected API response structure. Content: {message.content}"
-        print(warning_msg)
-        logger.warning("Unexpected API response structure. Content: %s", message.content)
-        return ""
+
+    warning_msg = f"Warning: Unexpected API response structure. Content: {message.content}"
+    print(warning_msg)
+    logger.warning("Unexpected API response structure. Content: %s", message.content)
+    return ""
+
+
+# --- Cached API Call ---
+@memory.cache(ignore=['client'])
+def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    return _call_claude_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+
+
+def call_claude_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    return _call_claude_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
 # --- End Cached API Call ---
 
 
-# Worker function for parallel processing
-def process_single_row(args_tuple):
-    """Processes a single row by calling the Claude API via a cached wrapper."""
-    index, row_data, required_columns, prompt_template, model, max_tokens, temperature, system_prompt, output_column = args_tuple
+def process_single_row(task: RowProcessingArgs):
+    """Processes a single row, supporting both Anthropic and OpenAI structured flows."""
 
-    # Load environment variables and initialize client within the worker process
-    load_dotenv()
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        # Cannot raise exception easily across processes, return error status
-        return index, None, "ANTHROPIC_API_KEY not found in environment variables"
-    
-    client = anthropic.Anthropic(api_key=api_key)
+    structured_config = task.structured_config
+    column_prefix = task.column_prefix
 
-    # Prepare the data for formatting the prompt template
-    # Convert row_data (dict) back to Series temporarily for easier NA checks if needed, or handle dict directly
-    format_dict = {col: row_data.get(col) for col in required_columns} 
-
-    # Check if any required values for the template are missing in this row
-    # Ensure robust checking for various forms of missing data (None, NaN)
-    if any(pd.isna(format_dict.get(col)) for col in required_columns):
-         return index, None, "Missing data for prompt template"
-
-    # Format the prompt using the template and row data
     try:
-        prompt_value = prompt_template.format(**format_dict)
+        if structured_config:
+            openai_client = _get_thread_local_openai_client()
+            anthropic_client = None
+        else:
+            openai_client = None
+            anthropic_client = _get_thread_local_anthropic_client()
+    except RuntimeError as exc:
+        return task.index, None, str(exc)
+
+    format_dict = {col: task.row_data.get(col) for col in task.required_columns}
+    if any(pd.isna(format_dict.get(col)) for col in task.required_columns):
+        return task.index, None, "Missing data for prompt template"
+
+    try:
+        prompt_value = task.prompt_template.format(**format_dict)
     except KeyError as e:
-        return index, None, f"Formatting error (likely missing column in template): {e}"
-    except TypeError as e: # Handle potential type errors during formatting if data isn't string
-        return index, None, f"Formatting error (likely type issue): {e}"
-
+        return task.index, None, f"Formatting error (likely missing column in template): {e}"
+    except TypeError as e:
+        return task.index, None, f"Formatting error (likely type issue): {e}"
 
     try:
-        # Call Claude API via the cached wrapper
-        response = call_claude_api_cached(
-            client=client, # Pass client, but it's ignored by cache
+        def _request(attempt: int):
+            if structured_config:
+                parsed = call_openai_structured(
+                    prompt_value=prompt_value,
+                    structured_config=structured_config,
+                    openai_client=openai_client,
+                )
+                if structured_config.output_field:
+                    target_value = getattr(parsed, structured_config.output_field, None)
+                else:
+                    target_value = parsed
+                value = _serialize_structured_value(target_value)
+                if not value.strip():
+                    raise RuntimeError("Structured output field empty")
+                return parsed, value
+            if attempt == 0:
+                return call_claude_api_cached(
+                    client=anthropic_client,
+                    model=task.model,
+                    max_tokens=task.max_tokens,
+                    temperature=task.temperature,
+                    system_prompt=task.system_prompt,
+                    prompt_value=prompt_value,
+                )
+            return call_claude_api_uncached(
+                client=anthropic_client,
+                model=task.model,
+                max_tokens=task.max_tokens,
+                temperature=task.temperature,
+                system_prompt=task.system_prompt,
+                prompt_value=prompt_value,
+            )
+
+        response = invoke_with_retries(task.max_retries, _request)
+
+        extra_fields: Optional[Dict[str, str]] = None
+        output_value: str
+
+        if structured_config:
+            parsed_model, output_value = response
+            if column_prefix:
+                dumped = parsed_model.model_dump()
+                extra_fields = {
+                    f"{column_prefix}{field}": _serialize_structured_value(value)
+                    for field, value in dumped.items()
+                }
+        else:
+            output_value = response
+
+        return task.index, {"output_value": output_value, "extra_fields": extra_fields}, None
+    except Exception as e:
+        return task.index, None, f"API Error: {e}"
+
+
+def _iter_row_processing_args(
+    df: pd.DataFrame,
+    indices: List[int],
+    positional_cols: List[str],
+    required_columns: List[str],
+    prompt_template: str,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    system_prompt: str,
+    output_column: str,
+    structured_output_config: Optional[StructuredOutputConfig],
+    max_retries: int,
+    column_prefix: Optional[str],
+) -> Iterable[RowProcessingArgs]:
+    """Yield RowProcessingArgs lazily so tasks can be streamed to workers."""
+
+    for index in indices:
+        row = df.loc[index]
+        row_dict = row.to_dict()
+        for col in positional_cols:
+            col_idx = int(col[3:]) - 1  # COL1 -> index 0
+            if 0 <= col_idx < len(row):
+                row_dict[col] = row.iloc[col_idx]
+            else:
+                row_dict[col] = pd.NA
+
+        yield RowProcessingArgs(
+            index=index,
+            row_data=row_dict,
+            required_columns=required_columns,
+            prompt_template=prompt_template,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
             system_prompt=system_prompt,
-            prompt_value=prompt_value
+            output_column=output_column,
+            structured_config=structured_output_config,
+            max_retries=max_retries,
+            column_prefix=column_prefix,
         )
-        return index, response, None # index, result, error=None
-
-    except Exception as e:
-        # Return error without verbose logging
-        return index, None, f"API Error: {e}" # index, result=None, error
 
 
 def process_csv_with_claude(
@@ -119,13 +438,18 @@ def process_csv_with_claude(
     prompt_template,
     output_column,
     system_prompt="You are a world-class poet. Respond only with short poems.",
-    model="claude-3-7-sonnet-20250219",
+    model=None,
     max_tokens=1000,
     temperature=1,
     test_first_row=False,
     parallel=1,
     skip_column=None,
-    skip_regex=None
+    skip_regex=None,
+    pydantic_model_path=None,
+    pydantic_model_class=None,
+    pydantic_model_field=None,
+    pydantic_model_column_prefix=None,
+    max_retries=2,
 ):
     """
     Process a CSV file by sending values from one column to Claude API and saving responses to another column.
@@ -143,20 +467,54 @@ def process_csv_with_claude(
         parallel (int): Number of parallel processes to use.
         skip_column (str, optional): Column name to check for skipping rows. Defaults to None.
         skip_regex (str, optional): Regex pattern to match in skip_column for skipping. Defaults to None.
+        pydantic_model_path (str, optional): Path or module reference to a Python file containing a Pydantic BaseModel for structured outputs.
+        pydantic_model_class (str, optional): Name of the BaseModel subclass to use when the module contains multiple models.
+        pydantic_model_field (str, optional): Field on the Pydantic model whose value should populate the output column (required unless column prefix is provided).
+        pydantic_model_column_prefix (str, optional): When provided, populate additional columns for every Pydantic field using this prefix and serialize the entire model into the output column.
+        max_retries (int): Number of retries after the initial attempt if the LLM call fails or returns empty output.
     """
     # Load environment variables from .env file (needed for main process checks)
     load_dotenv()
     
-    # Initialize the Anthropic client with API key from environment
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not found in environment variables in main process")
-    
-    # Client is initialized here for sequential mode or pre-checks
-    # For parallel mode, each worker initializes its own client
-    client = None
-    if parallel == 1:
-         client = anthropic.Anthropic(api_key=api_key)
+    if model is None:
+        model = DEFAULT_OPENAI_MODEL if pydantic_model_path else DEFAULT_ANTHROPIC_MODEL
+
+    max_retries = max(0, int(max_retries))
+
+    if pydantic_model_column_prefix and not pydantic_model_path:
+        raise ValueError("--pydantic-model-column-prefix requires --pydantic-model")
+
+    if pydantic_model_path:
+        if pydantic_model_column_prefix and pydantic_model_field:
+            raise ValueError("--pydantic-model-field cannot be used with --pydantic-model-column-prefix")
+        if not pydantic_model_column_prefix and not pydantic_model_field:
+            raise ValueError("--pydantic-model-field is required unless --pydantic-model-column-prefix is provided")
+
+    structured_output_config = None
+    anthropic_client = None
+    openai_client = None
+
+    if pydantic_model_path:
+        structured_output_config = build_structured_output_config(
+            model_reference=pydantic_model_path,
+            model_class_name=pydantic_model_class,
+            output_field=pydantic_model_field,
+            llm_model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+        )
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise ValueError("OPENAI_API_KEY not found in environment variables in main process")
+        if parallel == 1:
+            openai_client = OpenAI(api_key=openai_api_key)
+    else:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY not found in environment variables in main process")
+        if parallel == 1:
+            anthropic_client = anthropic.Anthropic(api_key=api_key)
 
     # Read the CSV file
     try:
@@ -197,7 +555,6 @@ def process_csv_with_claude(
 
     processed_count = 0
     skipped_count = 0
-    tasks = []
     skip_pattern = None
 
     # --- Skip Rows Logic ---
@@ -232,122 +589,195 @@ def process_csv_with_claude(
             print(f"{Fore.GREEN}🚀{Style.RESET_ALL} Proceeding to process {Fore.CYAN}{len(rows_to_process_indices)}{Style.RESET_ALL} remaining rows")
     # --- End Skip Rows Logic ---
 
-    # Prepare tasks for processing
-    for index in rows_to_process_indices:
-        row = df.loc[index]
+    rows_to_process_indices = list(rows_to_process_indices)
 
-        # Build an augmented dict that includes positional placeholders (COL\d+)
-        row_dict = row.to_dict()
-        for col in positional_cols:
-            col_idx = int(col[3:]) - 1  # COL1 → index 0
-            if 0 <= col_idx < len(row):
-                row_dict[col] = row.iloc[col_idx]
-            else:
-                row_dict[col] = pd.NA  # Out-of-range index
+    if test_first_row and rows_to_process_indices:
+        print(f"{Fore.CYAN}🧪{Style.RESET_ALL} Test mode: Preparing only the first valid row for processing")
+        rows_to_process_indices = [rows_to_process_indices[0]]
 
-        # Prepare data tuple for the worker function
-        task_args = (
-            index, row_dict, required_columns, prompt_template, model,
-            max_tokens, temperature, system_prompt, output_column
-        )
-        tasks.append(task_args)
-        
-        # Handle test_first_row: only prepare the first valid task
-        if test_first_row:
-             print(f"{Fore.CYAN}🧪{Style.RESET_ALL} Test mode: Preparing only the first valid row for processing")
-             break # Only add the first task
-
-    if not tasks:
+    total_tasks = len(rows_to_process_indices)
+    if total_tasks == 0:
         print(f"{Fore.GREEN}✓{Style.RESET_ALL} No rows require processing")
         return
 
     if parallel > 1:
         print(f"{Fore.BLUE}⚡{Style.RESET_ALL} Starting parallel processing with {Fore.CYAN}{parallel}{Style.RESET_ALL} workers")
-        results = {} # Store results keyed by index
-        with concurrent.futures.ProcessPoolExecutor(max_workers=parallel) as executor:
-            # Submit tasks
-            future_to_index = {executor.submit(process_single_row, task): task[0] for task in tasks}
 
-            # Use tqdm for progress tracking
-            with tqdm(total=len(tasks), desc="Processing rows", unit="row", 
-                     bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
-                for future in concurrent.futures.as_completed(future_to_index):
-                    index = future_to_index[future]
-                    try:
-                        idx, response, error = future.result()
-                        if error:
-                            tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing row {idx + 1}: {error}")
-                            df.at[idx, output_column] = f"ERROR: {error}" 
-                        else:
-                            df.at[idx, output_column] = response
-                            processed_count += 1
-                    except Exception as exc:
-                        tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Row {index + 1} generated an exception: {exc}")
-                        df.at[index, output_column] = f"ERROR: Future execution failed - {exc}"
-                    
-                    pbar.update(1)
+        def handle_future(fut, pbar):
+            nonlocal processed_count
+            idx: Optional[int] = None
+            try:
+                idx, response_payload, error = fut.result()
+                if error:
+                    tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing row {idx + 1}: {error}")
+                    df.at[idx, output_column] = f"ERROR: {error}"
+                else:
+                    df.at[idx, output_column] = response_payload["output_value"]
+                    extra_fields = response_payload.get("extra_fields")
+                    if extra_fields:
+                        for col_name, value in extra_fields.items():
+                            if col_name not in df.columns:
+                                df[col_name] = pd.NA
+                            df.at[idx, col_name] = value
+                    processed_count += 1
+            except Exception as exc:
+                fallback_idx = idx if idx is not None else getattr(fut, "row_index", None)
+                label = f"row {fallback_idx + 1}" if fallback_idx is not None else "a row"
+                tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing {label}: {exc}")
+                if fallback_idx is not None:
+                    df.at[fallback_idx, output_column] = f"ERROR: Future execution failed - {exc}"
+            finally:
+                pbar.update(1)
 
-        # Save the entire DataFrame once after all parallel tasks are done
+        task_iterator = _iter_row_processing_args(
+            df=df,
+            indices=rows_to_process_indices,
+            positional_cols=positional_cols,
+            required_columns=required_columns,
+            prompt_template=prompt_template,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            output_column=output_column,
+            structured_output_config=structured_output_config,
+            max_retries=max_retries,
+            column_prefix=pydantic_model_column_prefix,
+        )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
+            pending = set()
+            with tqdm(total=total_tasks, desc="Processing rows", unit="row",
+                      bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
+                for task in task_iterator:
+                    future = executor.submit(process_single_row, task)
+                    setattr(future, "row_index", task.index)
+                    pending.add(future)
+                    if len(pending) >= parallel:
+                        done_future = next(concurrent.futures.as_completed(pending))
+                        pending.remove(done_future)
+                        handle_future(done_future, pbar)
+
+                while pending:
+                    done_future = next(concurrent.futures.as_completed(pending))
+                    pending.remove(done_future)
+                    handle_future(done_future, pbar)
+
         print(f"{Fore.GREEN}💾{Style.RESET_ALL} Parallel processing finished. Saving results...")
         df.to_csv(output_csv_path, index=False)
 
     else: # Sequential processing (parallel == 1)
         print(f"{Fore.BLUE}🔄{Style.RESET_ALL} Starting sequential processing")
-        if client is None: # Should have been initialized earlier if parallel==1
-             client = anthropic.Anthropic(api_key=api_key)
+        if structured_output_config:
+            if openai_client is None:
+                openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        else:
+            if anthropic_client is None:
+                anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
         # Use tqdm for progress tracking
-        with tqdm(tasks, desc="Processing rows", unit="row", 
+        task_iterator = _iter_row_processing_args(
+            df=df,
+            indices=rows_to_process_indices,
+            positional_cols=positional_cols,
+            required_columns=required_columns,
+            prompt_template=prompt_template,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            output_column=output_column,
+            structured_output_config=structured_output_config,
+            max_retries=max_retries,
+            column_prefix=pydantic_model_column_prefix,
+        )
+
+        with tqdm(total=total_tasks, desc="Processing rows", unit="row", 
                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
-            for task_args in pbar:
-                index, row_data_dict, _, _, _, _, _, _, _ = task_args  # Unpack needed args
-
-                # Prepare the data for formatting the prompt template
-                format_dict = {col: row_data_dict.get(col) for col in required_columns}
-
-                # Check if any required values for the template are missing in this row
+            for task in task_iterator:
+                format_dict = {col: task.row_data.get(col) for col in task.required_columns}
                 if any(pd.isna(val) for val in format_dict.values()):
-                     tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {index+1} (missing data for prompt template)")
-                     continue
-
-                # Format the prompt using the template and row data
-                try:
-                    prompt_value = prompt_template.format(**format_dict)
-                except KeyError as e:
-                    tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {index+1} due to formatting error: {e}")
+                    tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {task.index+1} (missing data for prompt template)")
+                    pbar.update(1)
                     continue
 
-                # Update progress bar description with current row
-                pbar.set_postfix_str(f"Row {index+1}")
-
                 try:
-                    # Call Claude API via the cached wrapper (using the single client)
-                    response = call_claude_api_cached(
-                        client=client, # Pass client, but it's ignored by cache
+                    prompt_value = task.prompt_template.format(**format_dict)
+                except KeyError as e:
+                    tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {task.index+1} due to formatting error: {e}")
+                    pbar.update(1)
+                    continue
+
+                pbar.set_postfix_str(f"Row {task.index+1}")
+
+                def _request(attempt: int):
+                    if structured_output_config:
+                        parsed = call_openai_structured(
+                            prompt_value=prompt_value,
+                            structured_config=structured_output_config,
+                            openai_client=openai_client,
+                        )
+                        if structured_output_config.output_field:
+                            target_value = getattr(parsed, structured_output_config.output_field, None)
+                        else:
+                            target_value = parsed
+                        value = _serialize_structured_value(target_value)
+                        if not value.strip():
+                            raise RuntimeError("Structured output field empty")
+                        return parsed, value
+                    if attempt == 0:
+                        return call_claude_api_cached(
+                            client=anthropic_client,
+                            model=model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            system_prompt=system_prompt,
+                            prompt_value=prompt_value,
+                        )
+                    return call_claude_api_uncached(
+                        client=anthropic_client,
                         model=model,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         system_prompt=system_prompt,
-                        prompt_value=prompt_value
+                        prompt_value=prompt_value,
                     )
-                    
-                    # Save response to the dataframe
-                    df.at[index, output_column] = response
+
+                try:
+                    response = invoke_with_retries(task.max_retries, _request)
+
+                    extra_fields: Optional[Dict[str, str]] = None
+                    output_value: str
+
+                    if structured_output_config:
+                        parsed_model, output_value = response
+                        if task.column_prefix:
+                            dumped = parsed_model.model_dump()
+                            extra_fields = {
+                                f"{task.column_prefix}{field}": _serialize_structured_value(value)
+                                for field, value in dumped.items()
+                            }
+                    else:
+                        output_value = response
+
+                    df.at[task.index, output_column] = output_value
+                    if extra_fields:
+                        for col_name, value in extra_fields.items():
+                            if col_name not in df.columns:
+                                df[col_name] = pd.NA
+                            df.at[task.index, col_name] = value
                     processed_count += 1
-                    
-                    # Save progress after each successful API call (only in sequential mode)
                     df.to_csv(output_csv_path, index=False)
 
-                    # If testing the first row, break after successful processing (already handled by task list size)
                     if test_first_row:
                         tqdm.write(f"{Fore.CYAN}🧪{Style.RESET_ALL} Test mode: Processed first valid row. Exiting")
-                        break # Exit loop after first task
-
+                        break
                 except Exception as e:
-                    tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing row {index+1}: {e}")
-                    df.at[index, output_column] = f"ERROR: {e}"
-                    # Save progress even if there was an error (only in sequential mode)
+                    tqdm.write(f"{Fore.RED}✗{Style.RESET_ALL} Error processing row {task.index+1}: {e}")
+                    df.at[task.index, output_column] = f"ERROR: {e}"
                     df.to_csv(output_csv_path, index=False)
+                finally:
+                    pbar.update(1)
 
         print(f"{Fore.GREEN}✓{Style.RESET_ALL} Sequential processing finished")
 
