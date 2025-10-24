@@ -6,9 +6,13 @@ import shutil
 from unittest.mock import Mock, patch, MagicMock
 import re
 import sys
+import json
+from pydantic import BaseModel
 
 # Import the module under test
 from csv_to_llm import core as csv_to_llm
+from csv_to_llm.core import RowProcessingArgs
+from csv_to_llm.auto import run_auto_mode, AutoModelDesign
 
 
 class TestCsvToLlm:
@@ -37,6 +41,19 @@ class TestCsvToLlm:
     def output_csv_path(self, temp_dir):
         """Return path for output CSV."""
         return os.path.join(temp_dir, "test_output.csv")
+
+    @pytest.fixture
+    def sample_pydantic_model(self, temp_dir):
+        """Create a temporary Pydantic model file for structured output tests."""
+        model_path = os.path.join(temp_dir, "user_model.py")
+        with open(model_path, "w", encoding="utf-8") as f:
+            f.write(
+                "from pydantic import BaseModel\n\n"
+                "class EmailCategory(BaseModel):\n"
+                "    category: str\n"
+                "    explanation: str\n"
+            )
+        return model_path
     
     @pytest.fixture
     def mock_anthropic_client(self):
@@ -83,16 +100,19 @@ class TestProcessSingleRow(TestCsvToLlm):
         
         # Test data
         row_data = {'name': 'Alice', 'description': 'Engineer'}
-        args_tuple = (
-            0,  # index
-            row_data,
-            ['name', 'description'],  # required_columns
-            "Describe {name}: {description}",  # prompt_template
-            "claude-3-sonnet",  # model
-            1000,  # max_tokens
-            0.7,  # temperature
-            "You are helpful",  # system_prompt
-            "response"  # output_column
+        args_tuple = RowProcessingArgs(
+            index=0,
+            row_data=row_data,
+            required_columns=['name', 'description'],
+            prompt_template="Describe {name}: {description}",
+            model="claude-3-sonnet",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="You are helpful",
+            output_column="response",
+            structured_config=None,
+            max_retries=2,
+            column_prefix=None,
         )
         
         with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
@@ -100,7 +120,7 @@ class TestProcessSingleRow(TestCsvToLlm):
             index, response, error = csv_to_llm.process_single_row(args_tuple)
             
             assert index == 0
-            assert response == "Test response"
+            assert response["output_value"] == "Test response"
             assert error is None
     
     @patch('csv_to_llm.core.load_dotenv')
@@ -110,7 +130,20 @@ class TestProcessSingleRow(TestCsvToLlm):
         mock_getenv.return_value = None
         
         row_data = {'name': 'Alice'}
-        args_tuple = (0, row_data, ['name'], "{name}", "model", 1000, 0.7, "system", "output")
+        args_tuple = RowProcessingArgs(
+            index=0,
+            row_data=row_data,
+            required_columns=['name'],
+            prompt_template="{name}",
+            model="model",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="system",
+            output_column="output",
+            structured_config=None,
+            max_retries=2,
+            column_prefix=None,
+        )
         
         index, response, error = csv_to_llm.process_single_row(args_tuple)
         
@@ -121,8 +154,20 @@ class TestProcessSingleRow(TestCsvToLlm):
     def test_process_single_row_missing_data(self):
         """Test handling of missing data in row."""
         row_data = {'name': 'Alice', 'description': None}
-        args_tuple = (0, row_data, ['name', 'description'], "{name}: {description}", 
-                      "model", 1000, 0.7, "system", "output")
+        args_tuple = RowProcessingArgs(
+            index=0,
+            row_data=row_data,
+            required_columns=['name', 'description'],
+            prompt_template="{name}: {description}",
+            model="model",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="system",
+            output_column="output",
+            structured_config=None,
+            max_retries=2,
+            column_prefix=None,
+        )
         
         with patch('csv_to_llm.core.load_dotenv'), \
              patch('os.getenv', return_value="test_key"), \
@@ -138,8 +183,20 @@ class TestProcessSingleRow(TestCsvToLlm):
         # Create data with all required columns present but with wrong value structure
         row_data = {'name': 'Alice', 'missing_col': 'value'}
         # But template expects a different column
-        args_tuple = (0, row_data, ['name', 'wrong_col'], "{name}: {wrong_col}", 
-                      "model", 1000, 0.7, "system", "output")
+        args_tuple = RowProcessingArgs(
+            index=0,
+            row_data=row_data,
+            required_columns=['name', 'wrong_col'],
+            prompt_template="{name}: {wrong_col}",
+            model="model",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="system",
+            output_column="output",
+            structured_config=None,
+            max_retries=2,
+            column_prefix=None,
+        )
         
         with patch('csv_to_llm.core.load_dotenv'), \
              patch('os.getenv', return_value="test_key"), \
@@ -150,6 +207,66 @@ class TestProcessSingleRow(TestCsvToLlm):
             assert response is None
             # The function checks for missing data first, so we need a different test case
             assert "Missing data for prompt template" in error
+
+    @patch('csv_to_llm.core.load_dotenv')
+    @patch('os.getenv', return_value="test_key")
+    @patch('anthropic.Anthropic')
+    def test_process_single_row_retries_on_exception(self, mock_anthropic, mock_getenv, mock_load_dotenv, mock_anthropic_client):
+        """Ensure retries fall back to uncached calls after a failure."""
+        mock_anthropic.return_value = mock_anthropic_client
+        row_data = {'name': 'Alice'}
+        args = RowProcessingArgs(
+            index=0,
+            row_data=row_data,
+            required_columns=['name'],
+            prompt_template="{name}",
+            model="sonnet",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="system",
+            output_column="output",
+            structured_config=None,
+            max_retries=2,
+            column_prefix=None,
+        )
+
+        with patch('csv_to_llm.core.call_claude_api_cached', side_effect=Exception("boom")) as cached, \
+             patch('csv_to_llm.core.call_claude_api_uncached', return_value="Recovered") as uncached:
+            index, response, error = csv_to_llm.process_single_row(args)
+            assert index == 0
+            assert response["output_value"] == "Recovered"
+            assert error is None
+            cached.assert_called_once()
+            uncached.assert_called_once()
+
+    @patch('csv_to_llm.core.load_dotenv')
+    @patch('os.getenv', return_value="test_key")
+    @patch('anthropic.Anthropic')
+    def test_process_single_row_retry_exceeds_limit(self, mock_anthropic, mock_getenv, mock_load_dotenv, mock_anthropic_client):
+        """After exhausting retries the worker should return an error."""
+        mock_anthropic.return_value = mock_anthropic_client
+        row_data = {'name': 'Alice'}
+        args = RowProcessingArgs(
+            index=0,
+            row_data=row_data,
+            required_columns=['name'],
+            prompt_template="{name}",
+            model="sonnet",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="system",
+            output_column="output",
+            structured_config=None,
+            max_retries=1,
+            column_prefix=None,
+        )
+
+        with patch('csv_to_llm.core.call_claude_api_cached', side_effect=Exception("boom")), \
+             patch('csv_to_llm.core.call_claude_api_uncached', side_effect=Exception("boom2")):
+            index, response, error = csv_to_llm.process_single_row(args)
+            assert index == 0
+            assert response is None
+            assert "LLM call failed" in error
 
 
 class TestProcessCsvWithClaude(TestCsvToLlm):
@@ -285,6 +402,104 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             prompt_value = call_args['prompt_value']
             assert "Process A and X" in prompt_value
 
+    @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
+    def test_structured_output_flow(self, sample_csv, output_csv_path, sample_pydantic_model):
+        """Ensure structured outputs invoke the OpenAI helper and populate the column."""
+        with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
+            class Dummy(BaseModel):
+                category: str = "Category"
+                explanation: str = "Because"
+
+            mock_structured.return_value = Dummy()
+
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_field="category",
+                test_first_row=True,
+            )
+
+            assert mock_structured.called
+            df = pd.read_csv(output_csv_path)
+            assert df.loc[0, 'response'] == "Category"
+
+    @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
+    def test_structured_output_column_prefix(self, sample_csv, output_csv_path, sample_pydantic_model):
+        """Structured runs can populate prefixed columns for every field."""
+        with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
+            class Dummy(BaseModel):
+                category: str = "Category"
+                explanation: str = "Because"
+
+            mock_structured.return_value = Dummy()
+
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_column_prefix="llm_",
+                test_first_row=True,
+            )
+
+            df = pd.read_csv(output_csv_path)
+            response_payload = json.loads(df.loc[0, 'response'])
+            assert response_payload["category"] == "Category"
+            assert response_payload["explanation"] == "Because"
+            assert df.loc[0, 'llm_category'] == "Category"
+            assert df.loc[0, 'llm_explanation'] == "Because"
+
+    @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key'})
+    def test_structured_output_invalid_field(self, sample_csv, output_csv_path, sample_pydantic_model):
+        """Invalid field names should raise before any API call is made."""
+        with pytest.raises(ValueError, match="Field 'missing'"):
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_field="missing",
+            )
+
+    def test_structured_output_field_prefix_conflict(self, sample_csv, output_csv_path, sample_pydantic_model):
+        """Providing both field and prefix is rejected."""
+        with pytest.raises(ValueError, match="cannot be used"), \
+             patch.dict(os.environ, {'OPENAI_API_KEY': 'key'}):
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_field="category",
+                pydantic_model_column_prefix="llm_",
+            )
+
+    def test_column_prefix_requires_pydantic_model(self, sample_csv, output_csv_path):
+        """Providing a prefix without a Pydantic model should raise."""
+        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test_key'}):
+            with pytest.raises(ValueError, match="--pydantic-model-column-prefix"):
+                csv_to_llm.process_csv_with_claude(
+                    input_csv_path=sample_csv,
+                    output_csv_path=output_csv_path,
+                    prompt_template="Describe: {description}",
+                    output_column="response",
+                    pydantic_model_column_prefix="llm_",
+                )
+
 
 class TestCachedApiCall(TestCsvToLlm):
     
@@ -333,6 +548,7 @@ class TestCachedApiCall(TestCsvToLlm):
 class TestParallelProcessing(TestCsvToLlm):
     
     @patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test_key'})
+    @patch('concurrent.futures.process._check_system_limits', lambda: None)
     @patch('anthropic.Anthropic')
     def test_parallel_processing(self, mock_anthropic, sample_csv, output_csv_path, mock_anthropic_client):
         """Test parallel processing mode."""
@@ -391,18 +607,18 @@ class TestErrorHandling(TestCsvToLlm):
         
         with patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
             mock_api.side_effect = Exception("API Error")
-            
-            csv_to_llm.process_csv_with_claude(
-                input_csv_path=sample_csv,
-                output_csv_path=output_csv_path,
-                prompt_template="Describe: {description}",
-                output_column="response",
-                test_first_row=True
-            )
-            
-            # Verify error was handled and saved to CSV
-            df = pd.read_csv(output_csv_path)
-            assert "ERROR: API Error" in str(df.loc[0, 'response'])
+            with patch('csv_to_llm.core.call_claude_api_uncached', side_effect=Exception("API Error")):
+                csv_to_llm.process_csv_with_claude(
+                    input_csv_path=sample_csv,
+                    output_csv_path=output_csv_path,
+                    prompt_template="Describe: {description}",
+                    output_column="response",
+                    test_first_row=True
+                )
+
+        # Verify error was handled and saved to CSV
+        df = pd.read_csv(output_csv_path)
+        assert "LLM call failed" in str(df.loc[0, 'response'])
     
     def test_invalid_skip_column(self, sample_csv, output_csv_path):
         """Test error when skip column doesn't exist."""
@@ -468,6 +684,48 @@ class TestIntegrationScenarios(TestCsvToLlm):
             assert df_result.loc[0, 'response'] == "Already processed"
             assert df_result.loc[1, 'response'] == "New response"
             assert df_result.loc[2, 'response'] == "New response"
+
+
+class TestAutoMode:
+
+    @pytest.fixture
+    def temp_dir(self):
+        temp_dir = tempfile.mkdtemp()
+        yield temp_dir
+        shutil.rmtree(temp_dir)
+
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_generates_files(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"subject": ["Hello", "World"], "body": ["a", "b"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="EmailCategory",
+            python_code="from pydantic import BaseModel\n\nclass EmailCategory(BaseModel):\n    category: str\n",
+            primary_field="category",
+            prompt_template="Classify this subject: {subject}",
+            output_column_name="llm_category",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="Categorize",
+            input_csv_path=csv_path,
+            sample_size=2,
+            model="gpt-test",
+            temperature=0,
+            output_column=None,
+            openai_client=None,
+        )
+
+        assert plan.prompt_template == design.prompt_template
+        assert os.path.exists(plan.pydantic_model_path)
+        assert plan.primary_field == "category"
+        assert plan.output_column == "llm_category"
 
 
 if __name__ == "__main__":
