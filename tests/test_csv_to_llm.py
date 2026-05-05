@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch, MagicMock
 import re
 import sys
 import json
+from enum import Enum
 from pydantic import BaseModel
 
 # Import the module under test
@@ -62,8 +63,11 @@ class TestCsvToLlm:
         with open(model_path, "w", encoding="utf-8") as f:
             f.write(
                 "from pydantic import BaseModel\n\n"
+                "from enum import Enum\n\n"
+                "class CostStructureType(str, Enum):\n"
+                "    PAID_ADDON = 'paid_addon'\n\n"
                 "class Pricing(BaseModel):\n"
-                "    cost_structure: str\n"
+                "    cost_structure: CostStructureType\n"
                 "    custom_domain_support: bool\n\n"
                 "class EmailDeliveryService(BaseModel):\n"
                 "    provider_name: str\n"
@@ -478,8 +482,11 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
     def test_structured_output_column_prefix_flattens_nested_fields(self, sample_csv, output_csv_path, nested_pydantic_model):
         """Nested structured output objects should become individual prefixed columns."""
         with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
+            class CostStructureType(str, Enum):
+                PAID_ADDON = "paid_addon"
+
             class Pricing(BaseModel):
-                cost_structure: str = "paid_addon"
+                cost_structure: CostStructureType = CostStructureType.PAID_ADDON
                 custom_domain_support: bool = True
 
             class Dummy(BaseModel):

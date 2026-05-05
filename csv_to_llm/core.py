@@ -13,6 +13,7 @@ import hashlib
 import json
 import threading
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from typing import Optional, Type, Tuple, List, Callable, Dict, Any, Iterable
 from joblib import Memory
@@ -276,7 +277,9 @@ def _serialize_structured_value(value: Any) -> str:
     """Convert arbitrary structured field data to a CSV-friendly string."""
 
     if isinstance(value, BaseModel):
-        value = value.model_dump()
+        value = value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        value = value.value
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     if value is None:
@@ -288,14 +291,14 @@ def _flatten_structured_fields(value: Any, prefix: str) -> Dict[str, str]:
     """Flatten nested structured output values into CSV column names."""
 
     if isinstance(value, BaseModel):
-        value = value.model_dump()
+        value = value.model_dump(mode="json")
 
     if isinstance(value, dict):
         flattened: Dict[str, str] = {}
         for key, nested_value in value.items():
             key_prefix = f"{prefix}{key}"
             if isinstance(nested_value, BaseModel):
-                nested_value = nested_value.model_dump()
+                nested_value = nested_value.model_dump(mode="json")
             if isinstance(nested_value, dict):
                 flattened.update(_flatten_structured_fields(nested_value, f"{key_prefix}_"))
             else:
