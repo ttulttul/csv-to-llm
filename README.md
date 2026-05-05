@@ -161,7 +161,7 @@ Notes:
 - `--pydantic-model-field` is required and must exist on the BaseModel class.
 - `--model` should reference an OpenAI model that supports Structured Outputs.
 - Structured outputs cannot be combined with `--embeddings`.
-- Use `--pydantic-model-column-prefix` (for example, `--pydantic-model-column-prefix llm_`) to populate every field from the Pydantic model into its own column such as `llm_category`, `llm_explanation`, etc.; the entire structured response is stored (as JSON) in `--output-col`. This option is mutually exclusive with `--pydantic-model-field`.
+- Use `--pydantic-model-column-prefix` (for example, `--pydantic-model-column-prefix llm_`) to populate every field from the Pydantic model into its own column such as `llm_category`, `llm_explanation`, etc. Nested objects are flattened into column names such as `llm_pricing_and_provisioning_cost_structure`. Lists and other compound values are serialized as JSON. The entire structured response is also stored as JSON in `--output-col`. This option is mutually exclusive with `--pydantic-model-field`.
 
 ### Auto Mode
 

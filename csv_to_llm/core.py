@@ -284,6 +284,27 @@ def _serialize_structured_value(value: Any) -> str:
     return str(value)
 
 
+def _flatten_structured_fields(value: Any, prefix: str) -> Dict[str, str]:
+    """Flatten nested structured output values into CSV column names."""
+
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+
+    if isinstance(value, dict):
+        flattened: Dict[str, str] = {}
+        for key, nested_value in value.items():
+            key_prefix = f"{prefix}{key}"
+            if isinstance(nested_value, BaseModel):
+                nested_value = nested_value.model_dump()
+            if isinstance(nested_value, dict):
+                flattened.update(_flatten_structured_fields(nested_value, f"{key_prefix}_"))
+            else:
+                flattened[key_prefix] = _serialize_structured_value(nested_value)
+        return flattened
+
+    return {prefix.rstrip("_"): _serialize_structured_value(value)}
+
+
 def invoke_with_retries(max_retries: int, request_fn: Callable[[int], str]) -> str:
     """Execute request_fn with retry semantics. request_fn receives the attempt index."""
 
@@ -515,10 +536,7 @@ def process_single_row(task: RowProcessingArgs):
             parsed_model, output_value = response
             if column_prefix:
                 dumped = parsed_model.model_dump()
-                extra_fields = {
-                    f"{column_prefix}{field}": _serialize_structured_value(value)
-                    for field, value in dumped.items()
-                }
+                extra_fields = _flatten_structured_fields(dumped, column_prefix)
         else:
             output_value = response
 
@@ -915,10 +933,7 @@ def process_csv_with_claude(
                         parsed_model, output_value = response
                         if task.column_prefix:
                             dumped = parsed_model.model_dump()
-                            extra_fields = {
-                                f"{task.column_prefix}{field}": _serialize_structured_value(value)
-                                for field, value in dumped.items()
-                            }
+                            extra_fields = _flatten_structured_fields(dumped, task.column_prefix)
                     else:
                         output_value = response
 

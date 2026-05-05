@@ -54,6 +54,23 @@ class TestCsvToLlm:
                 "    explanation: str\n"
             )
         return model_path
+
+    @pytest.fixture
+    def nested_pydantic_model(self, temp_dir):
+        """Create a temporary nested Pydantic model file for column flattening tests."""
+        model_path = os.path.join(temp_dir, "nested_user_model.py")
+        with open(model_path, "w", encoding="utf-8") as f:
+            f.write(
+                "from pydantic import BaseModel\n\n"
+                "class Pricing(BaseModel):\n"
+                "    cost_structure: str\n"
+                "    custom_domain_support: bool\n\n"
+                "class EmailDeliveryService(BaseModel):\n"
+                "    provider_name: str\n"
+                "    pricing_and_provisioning: Pricing\n"
+                "    webmail_clients: list[str]\n"
+            )
+        return model_path
     
     @pytest.fixture
     def mock_anthropic_client(self):
@@ -456,6 +473,40 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             assert response_payload["explanation"] == "Because"
             assert df.loc[0, 'llm_category'] == "Category"
             assert df.loc[0, 'llm_explanation'] == "Because"
+
+    @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
+    def test_structured_output_column_prefix_flattens_nested_fields(self, sample_csv, output_csv_path, nested_pydantic_model):
+        """Nested structured output objects should become individual prefixed columns."""
+        with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
+            class Pricing(BaseModel):
+                cost_structure: str = "paid_addon"
+                custom_domain_support: bool = True
+
+            class Dummy(BaseModel):
+                provider_name: str = "Shopify"
+                pricing_and_provisioning: Pricing = Pricing()
+                webmail_clients: list[str] = ["Roundcube"]
+
+            mock_structured.return_value = Dummy()
+
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=nested_pydantic_model,
+                pydantic_model_class="EmailDeliveryService",
+                pydantic_model_column_prefix="llm_",
+                test_first_row=True,
+            )
+
+            df = pd.read_csv(output_csv_path)
+            assert df.loc[0, 'llm_provider_name'] == "Shopify"
+            assert df.loc[0, 'llm_pricing_and_provisioning_cost_structure'] == "paid_addon"
+            assert df.loc[0, 'llm_pricing_and_provisioning_custom_domain_support'] == True
+            assert json.loads(df.loc[0, 'llm_webmail_clients']) == ["Roundcube"]
+            assert 'llm_pricing_and_provisioning' not in df.columns
 
     @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key'})
     def test_structured_output_invalid_field(self, sample_csv, output_csv_path, sample_pydantic_model):
