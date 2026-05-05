@@ -30,12 +30,20 @@ logger = logging.getLogger(__name__)
 
 # --- Joblib Cache Setup ---
 # Define cache directory (you might want to make this configurable or use a temporary dir)
-cachedir = './claude_cache' 
+cachedir = './llm_cache'
 memory = Memory(cachedir, verbose=0)
 # --- End Cache Setup ---
 
-DEFAULT_ANTHROPIC_MODEL = "sonnet-4.5"
-DEFAULT_OPENAI_MODEL = "gpt-5"
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_OPENAI = "openai"
+PROVIDER_PERPLEXITY = "perplexity"
+SUPPORTED_LLM_PROVIDERS = (PROVIDER_ANTHROPIC, PROVIDER_OPENAI, PROVIDER_PERPLEXITY)
+
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
+DEFAULT_OPENAI_MODEL = "gpt-5.2"
+DEFAULT_PERPLEXITY_MODEL = "sonar-pro"
+DEFAULT_PROVIDER = PROVIDER_ANTHROPIC
+PERPLEXITY_BASE_URL = "https://api.perplexity.ai"
 
 _thread_local_clients = threading.local()
 
@@ -69,29 +77,46 @@ class RowProcessingArgs:
     structured_config: Optional[StructuredOutputConfig]
     max_retries: int
     column_prefix: Optional[str]
+    provider: str = DEFAULT_PROVIDER
 
 
 def _get_thread_local_openai_client() -> OpenAI:
     """Fetch (or create) a thread-local OpenAI client for reuse."""
 
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not found in environment variables")
+
     client = getattr(_thread_local_clients, "openai_client", None)
     if client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not found in environment variables")
         client = OpenAI(api_key=api_key)
         _thread_local_clients.openai_client = client
+    return client
+
+
+def _get_thread_local_perplexity_client() -> OpenAI:
+    """Fetch (or create) a thread-local Perplexity client for reuse."""
+
+    api_key = os.getenv("PERPLEXITY_API_KEY")
+    if not api_key:
+        raise RuntimeError("PERPLEXITY_API_KEY not found in environment variables")
+
+    client = getattr(_thread_local_clients, "perplexity_client", None)
+    if client is None:
+        client = OpenAI(api_key=api_key, base_url=PERPLEXITY_BASE_URL)
+        _thread_local_clients.perplexity_client = client
     return client
 
 
 def _get_thread_local_anthropic_client() -> anthropic.Anthropic:
     """Fetch (or create) a thread-local Anthropic client for reuse."""
 
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not found in environment variables")
+
     client = getattr(_thread_local_clients, "anthropic_client", None)
     if client is None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not found in environment variables")
         client = anthropic.Anthropic(api_key=api_key)
         _thread_local_clients.anthropic_client = client
     return client
@@ -231,6 +256,22 @@ def call_openai_structured(prompt_value: str, structured_config: StructuredOutpu
     return parsed
 
 
+def _extract_openai_response_text(response: Any) -> str:
+    """Extract text from an OpenAI Responses API response."""
+
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return output_text
+
+    fragments: List[str] = []
+    for item in getattr(response, "output", []) or []:
+        for content in getattr(item, "content", []) or []:
+            text = getattr(content, "text", None)
+            if text:
+                fragments.append(text)
+    return "".join(fragments)
+
+
 def _serialize_structured_value(value: Any) -> str:
     """Convert arbitrary structured field data to a CSV-friendly string."""
 
@@ -296,6 +337,48 @@ def _call_claude_api(client, model, max_tokens, temperature, system_prompt, prom
     return ""
 
 
+def _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    """Internal helper that performs an OpenAI Responses API call."""
+
+    logger.info("Sending request to OpenAI model '%s'. Prompt: %s", model, prompt_value)
+    response = client.responses.create(
+        model=model,
+        input=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_value},
+        ],
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+    )
+    response_text = _extract_openai_response_text(response)
+    logger.info("Received response from OpenAI. Response: %s", response_text)
+    return response_text
+
+
+def _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    """Internal helper that performs a Perplexity Sonar chat completion call."""
+
+    logger.info("Sending request to Perplexity model '%s'. Prompt: %s", model, prompt_value)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_value},
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    if response.choices and response.choices[0].message.content:
+        response_text = response.choices[0].message.content
+        logger.info("Received response from Perplexity. Response: %s", response_text)
+        return response_text
+
+    warning_msg = f"Warning: Unexpected API response structure. Choices: {response.choices}"
+    print(warning_msg)
+    logger.warning("Unexpected Perplexity API response structure. Choices: %s", response.choices)
+    return ""
+
+
 # --- Cached API Call ---
 @memory.cache(ignore=['client'])
 def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
@@ -304,7 +387,69 @@ def call_claude_api_cached(client, model, max_tokens, temperature, system_prompt
 
 def call_claude_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value):
     return _call_claude_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+
+
+@memory.cache(ignore=['client'])
+def call_openai_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    return _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+
+
+def call_openai_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    return _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+
+
+@memory.cache(ignore=['client'])
+def call_perplexity_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    return _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+
+
+def call_perplexity_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value):
+    return _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
 # --- End Cached API Call ---
+
+
+def _get_provider_client(provider: str):
+    """Return a thread-local client for the selected provider."""
+
+    if provider == PROVIDER_ANTHROPIC:
+        return _get_thread_local_anthropic_client()
+    if provider == PROVIDER_OPENAI:
+        return _get_thread_local_openai_client()
+    if provider == PROVIDER_PERPLEXITY:
+        return _get_thread_local_perplexity_client()
+    raise RuntimeError(f"Unsupported provider '{provider}'")
+
+
+def call_llm_api(
+    provider: str,
+    client: Any,
+    model: str,
+    max_tokens: int,
+    temperature: float,
+    system_prompt: str,
+    prompt_value: str,
+    attempt: int,
+) -> str:
+    """Call the selected LLM provider, using the cache only for the first attempt."""
+
+    cache = attempt == 0
+    if provider == PROVIDER_ANTHROPIC:
+        request_fn = call_claude_api_cached if cache else call_claude_api_uncached
+    elif provider == PROVIDER_OPENAI:
+        request_fn = call_openai_api_cached if cache else call_openai_api_uncached
+    elif provider == PROVIDER_PERPLEXITY:
+        request_fn = call_perplexity_api_cached if cache else call_perplexity_api_uncached
+    else:
+        raise ValueError(f"Unsupported provider '{provider}'")
+
+    return request_fn(
+        client=client,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        system_prompt=system_prompt,
+        prompt_value=prompt_value,
+    )
 
 
 def process_single_row(task: RowProcessingArgs):
@@ -316,10 +461,10 @@ def process_single_row(task: RowProcessingArgs):
     try:
         if structured_config:
             openai_client = _get_thread_local_openai_client()
-            anthropic_client = None
+            provider_client = None
         else:
             openai_client = None
-            anthropic_client = _get_thread_local_anthropic_client()
+            provider_client = _get_provider_client(task.provider)
     except RuntimeError as exc:
         return task.index, None, str(exc)
 
@@ -350,22 +495,15 @@ def process_single_row(task: RowProcessingArgs):
                 if not value.strip():
                     raise RuntimeError("Structured output field empty")
                 return parsed, value
-            if attempt == 0:
-                return call_claude_api_cached(
-                    client=anthropic_client,
-                    model=task.model,
-                    max_tokens=task.max_tokens,
-                    temperature=task.temperature,
-                    system_prompt=task.system_prompt,
-                    prompt_value=prompt_value,
-                )
-            return call_claude_api_uncached(
-                client=anthropic_client,
+            return call_llm_api(
+                provider=task.provider,
+                client=provider_client,
                 model=task.model,
                 max_tokens=task.max_tokens,
                 temperature=task.temperature,
                 system_prompt=task.system_prompt,
                 prompt_value=prompt_value,
+                attempt=attempt,
             )
 
         response = invoke_with_retries(task.max_retries, _request)
@@ -395,6 +533,7 @@ def _iter_row_processing_args(
     positional_cols: List[str],
     required_columns: List[str],
     prompt_template: str,
+    provider: str,
     model: str,
     max_tokens: int,
     temperature: float,
@@ -421,6 +560,7 @@ def _iter_row_processing_args(
             row_data=row_dict,
             required_columns=required_columns,
             prompt_template=prompt_template,
+            provider=provider,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -438,6 +578,7 @@ def process_csv_with_claude(
     prompt_template,
     output_column,
     system_prompt="You are a world-class poet. Respond only with short poems.",
+    provider=None,
     model=None,
     max_tokens=1000,
     temperature=1,
@@ -452,15 +593,16 @@ def process_csv_with_claude(
     max_retries=2,
 ):
     """
-    Process a CSV file by sending values from one column to Claude API and saving responses to another column.
+    Process a CSV file by sending templated row data to an LLM API and saving responses to another column.
     
     Args:
         input_csv_path (str): Path to the input CSV file
         output_csv_path (str): Path to save the output CSV file
         prompt_template (str): A template string for the prompt, potentially containing column names in curly braces (e.g., "Summarize: {text_column}")
         output_column (str): Name of the column to store Claude's responses
-        system_prompt (str): System prompt for Claude API
-        model (str): Claude model to use
+        system_prompt (str): System prompt for the LLM API
+        provider (str): LLM provider to use: anthropic, openai, or perplexity
+        model (str): Model to use
         max_tokens (int): Maximum tokens for Claude's response
         temperature (float): Temperature setting for response randomness
         test_first_row (bool): If True, only process the first valid row and exit.
@@ -475,9 +617,24 @@ def process_csv_with_claude(
     """
     # Load environment variables from .env file (needed for main process checks)
     load_dotenv()
+
+    if provider is None and pydantic_model_path:
+        provider = PROVIDER_OPENAI
+    provider = (provider or DEFAULT_PROVIDER).lower()
+    if provider not in SUPPORTED_LLM_PROVIDERS:
+        raise ValueError(
+            f"Unsupported provider '{provider}'. Choose one of: {', '.join(SUPPORTED_LLM_PROVIDERS)}"
+        )
+    if pydantic_model_path and provider != PROVIDER_OPENAI:
+        raise ValueError("Structured outputs currently require provider='openai'")
     
     if model is None:
-        model = DEFAULT_OPENAI_MODEL if pydantic_model_path else DEFAULT_ANTHROPIC_MODEL
+        if pydantic_model_path or provider == PROVIDER_OPENAI:
+            model = DEFAULT_OPENAI_MODEL
+        elif provider == PROVIDER_PERPLEXITY:
+            model = DEFAULT_PERPLEXITY_MODEL
+        else:
+            model = DEFAULT_ANTHROPIC_MODEL
 
     max_retries = max(0, int(max_retries))
 
@@ -489,32 +646,6 @@ def process_csv_with_claude(
             raise ValueError("--pydantic-model-field cannot be used with --pydantic-model-column-prefix")
         if not pydantic_model_column_prefix and not pydantic_model_field:
             raise ValueError("--pydantic-model-field is required unless --pydantic-model-column-prefix is provided")
-
-    structured_output_config = None
-    anthropic_client = None
-    openai_client = None
-
-    if pydantic_model_path:
-        structured_output_config = build_structured_output_config(
-            model_reference=pydantic_model_path,
-            model_class_name=pydantic_model_class,
-            output_field=pydantic_model_field,
-            llm_model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system_prompt=system_prompt,
-        )
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
-            raise ValueError("OPENAI_API_KEY not found in environment variables in main process")
-        if parallel == 1:
-            openai_client = OpenAI(api_key=openai_api_key)
-    else:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment variables in main process")
-        if parallel == 1:
-            anthropic_client = anthropic.Anthropic(api_key=api_key)
 
     # Read the CSV file
     try:
@@ -589,6 +720,42 @@ def process_csv_with_claude(
             print(f"{Fore.GREEN}🚀{Style.RESET_ALL} Proceeding to process {Fore.CYAN}{len(rows_to_process_indices)}{Style.RESET_ALL} remaining rows")
     # --- End Skip Rows Logic ---
 
+    structured_output_config = None
+    provider_client = None
+    openai_client = None
+
+    if pydantic_model_path:
+        structured_output_config = build_structured_output_config(
+            model_reference=pydantic_model_path,
+            model_class_name=pydantic_model_class,
+            output_field=pydantic_model_field,
+            llm_model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+        )
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise ValueError("OPENAI_API_KEY not found in environment variables in main process")
+        if parallel == 1:
+            openai_client = OpenAI(api_key=openai_api_key)
+    else:
+        required_key = {
+            PROVIDER_ANTHROPIC: "ANTHROPIC_API_KEY",
+            PROVIDER_OPENAI: "OPENAI_API_KEY",
+            PROVIDER_PERPLEXITY: "PERPLEXITY_API_KEY",
+        }[provider]
+        api_key = os.getenv(required_key)
+        if not api_key:
+            raise ValueError(f"{required_key} not found in environment variables in main process")
+        if parallel == 1:
+            if provider == PROVIDER_ANTHROPIC:
+                provider_client = anthropic.Anthropic(api_key=api_key)
+            elif provider == PROVIDER_OPENAI:
+                provider_client = OpenAI(api_key=api_key)
+            else:
+                provider_client = OpenAI(api_key=api_key, base_url=PERPLEXITY_BASE_URL)
+
     rows_to_process_indices = list(rows_to_process_indices)
 
     if test_first_row and rows_to_process_indices:
@@ -635,6 +802,7 @@ def process_csv_with_claude(
             positional_cols=positional_cols,
             required_columns=required_columns,
             prompt_template=prompt_template,
+            provider=provider,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -672,8 +840,8 @@ def process_csv_with_claude(
             if openai_client is None:
                 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         else:
-            if anthropic_client is None:
-                anthropic_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            if provider_client is None:
+                provider_client = _get_provider_client(provider)
 
         # Use tqdm for progress tracking
         task_iterator = _iter_row_processing_args(
@@ -682,6 +850,7 @@ def process_csv_with_claude(
             positional_cols=positional_cols,
             required_columns=required_columns,
             prompt_template=prompt_template,
+            provider=provider,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -725,22 +894,15 @@ def process_csv_with_claude(
                         if not value.strip():
                             raise RuntimeError("Structured output field empty")
                         return parsed, value
-                    if attempt == 0:
-                        return call_claude_api_cached(
-                            client=anthropic_client,
-                            model=model,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            system_prompt=system_prompt,
-                            prompt_value=prompt_value,
-                        )
-                    return call_claude_api_uncached(
-                        client=anthropic_client,
+                    return call_llm_api(
+                        provider=provider,
+                        client=provider_client,
                         model=model,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         system_prompt=system_prompt,
                         prompt_value=prompt_value,
+                        attempt=attempt,
                     )
 
                 try:
@@ -784,6 +946,14 @@ def process_csv_with_claude(
     processed_rows_final = len(df[df[output_column].notna()]) - (total_rows - total_rows_to_process) # Count non-NA in output col minus initially skipped
     print(f"\n{Fore.GREEN}🎉{Style.RESET_ALL} Completed processing. Total rows with output: {Fore.CYAN}{processed_rows_final}/{total_rows}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}💾{Style.RESET_ALL} Results saved to {Fore.CYAN}{output_csv_path}{Style.RESET_ALL}")
+
+
+def process_csv_with_llm(*args: Any, **kwargs: Any) -> None:
+    """Compatibility-friendly alias for processing CSV rows with any supported LLM provider."""
+
+    process_csv_with_claude(*args, **kwargs)
+
+
 # --------------------------------------------------------------------------- #
 # Embeddings processing                                                       #
 # --------------------------------------------------------------------------- #

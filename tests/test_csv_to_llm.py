@@ -544,6 +544,46 @@ class TestCachedApiCall(TestCsvToLlm):
             mock_print.assert_called()
             assert "Warning: Unexpected API response structure" in str(mock_print.call_args)
 
+    def test_openai_responses_api_call(self):
+        """OpenAI text generation should use the Responses API."""
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.output_text = "OpenAI response"
+        mock_client.responses.create.return_value = mock_response
+
+        response = csv_to_llm.call_openai_api_uncached(
+            client=mock_client,
+            model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="Test system",
+            prompt_value="Test prompt",
+        )
+
+        assert response == "OpenAI response"
+        mock_client.responses.create.assert_called_once()
+
+    def test_perplexity_chat_completion_call(self):
+        """Perplexity text generation should use its OpenAI-compatible chat API."""
+        mock_client = Mock()
+        mock_choice = Mock()
+        mock_choice.message.content = "Perplexity response"
+        mock_response = Mock()
+        mock_response.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_response
+
+        response = csv_to_llm.call_perplexity_api_uncached(
+            client=mock_client,
+            model="sonar-pro",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="Test system",
+            prompt_value="Test prompt",
+        )
+
+        assert response == "Perplexity response"
+        mock_client.chat.completions.create.assert_called_once()
+
 
 class TestParallelProcessing(TestCsvToLlm):
     

@@ -1,38 +1,44 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "csv-to-llm"
 version = "0.1.0"
-description = "Process CSV files with Claude API using prompt templates"
+description = "Process CSV files with LLM APIs using prompt templates"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
     {name = "Your Name", email = "your.email@example.com"},
 ]
-keywords = ["csv", "llm", "claude", "api", "batch-processing"]
+keywords = ["csv", "llm", "openai", "anthropic", "perplexity", "api", "batch-processing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "pandas>=2.0.0",
-    "anthropic>=0.20.0",
+    "anthropic>=0.99.0",
     "python-dotenv>=1.0.0",
     "joblib>=1.2.0",
     "tqdm>=4.64.0",
     "colorama>=0.4.4",
-    "openai>=1.40.0",
+    "openai>=2.34.0",
     "pydantic>=2.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
 ]
 
 [project.scripts]

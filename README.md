@@ -1,6 +1,6 @@
 # csv-to-llm
 
-A Python package that processes CSV files by sending templated prompts to Claude API in parallel and storing responses in a new column.
+A Python package that processes CSV files by sending templated prompts to OpenAI, Anthropic, or Perplexity APIs in parallel and storing responses in a new column.
 
 ## Features
 
@@ -13,6 +13,7 @@ A Python package that processes CSV files by sending templated prompts to Claude
 - **Resume Support**: Continue processing from where you left off
 - **Embeddings Generation**: Generate text embeddings with `--embeddings`, using providers such as OpenAI
 - **Automatic Retries**: Re-attempt failed or empty generations up to a configurable number of times
+- **Provider Selection**: Generate text with Anthropic Messages, OpenAI Responses, or Perplexity Sonar
 - **Structured Outputs**: Enforce schemas defined in user-supplied Pydantic models via OpenAI's structured responses
 - **Auto Schema Mode**: Provide a single instruction via `--auto` and let the tool synthesize a Pydantic model and prompt automatically
 
@@ -26,28 +27,22 @@ cd csv-to-llm
 pip install -e .
 ```
 
-### For Development
+### With uv
 
 ```bash
 git clone <repository-url>
 cd csv-to-llm
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -e .
+uv sync
 ```
 
 ## Configuration
 
-Create a `.env` file in your project directory with your Anthropic API key:
+Create a `.env` file in your project directory with the API keys you need:
 
 ```
 ANTHROPIC_API_KEY=your_api_key_here
-```
-
-To use structured outputs with OpenAI, also provide:
-
-```
 OPENAI_API_KEY=your_openai_key_here
+PERPLEXITY_API_KEY=your_perplexity_key_here
 ```
 
 ## Usage
@@ -69,7 +64,27 @@ csv-to-llm \
   --system "You are a professional translator"
 ```
 
-By default the tool targets Anthropic's **Sonnet-4.5** model. When you enable structured outputs via `--pydantic-model`, the default automatically switches to OpenAI's **gpt-5** (you can still override `--model` explicitly at any time).
+By default the tool targets Anthropic's **claude-sonnet-4-20250514** model. Use `--provider openai` for OpenAI's Responses API or `--provider perplexity` for Perplexity Sonar. When you enable structured outputs via `--pydantic-model`, the default automatically switches to OpenAI's **gpt-5.2** (you can still override `--model` explicitly at any time).
+
+```bash
+csv-to-llm \
+  --provider openai \
+  --model gpt-5.2 \
+  --input data.csv \
+  --output results.csv \
+  --prompt-template "Summarize: {text}" \
+  --output-col summary
+```
+
+```bash
+csv-to-llm \
+  --provider perplexity \
+  --model sonar-pro \
+  --input data.csv \
+  --output results.csv \
+  --prompt-template "Research and enrich this company: {company_name}" \
+  --output-col enrichment
+```
 
 ### Advanced Example with Parallel Processing
 
@@ -124,7 +139,8 @@ csv-to-llm \
   --output output.csv \
   --prompt-template "Categorize the subject using the supplied schema: {subject}" \
   --output-col category \
-  --model gpt-4o-mini \
+  --provider openai \
+  --model gpt-5.2 \
   --pydantic-model my_model.py \
   --pydantic-model-class EmailCategory \
   --pydantic-model-field category
@@ -145,7 +161,7 @@ csv-to-llm \
 Notes:
 
 - `--pydantic-model-field` is required and must exist on the BaseModel class.
-- `--model` should reference an OpenAI model that supports Structured Outputs (e.g., `gpt-4o-mini`).
+- `--model` should reference an OpenAI model that supports Structured Outputs.
 - Structured outputs cannot be combined with `--embeddings`.
 - Use `--pydantic-model-column-prefix` (for example, `--pydantic-model-column-prefix llm_`) to populate every field from the Pydantic model into its own column such as `llm_category`, `llm_explanation`, etc.; the entire structured response is stored (as JSON) in `--output-col`. This option is mutually exclusive with `--pydantic-model-field`.
 
@@ -171,9 +187,10 @@ Options:
 - `--output`: Output CSV file path (required)
 - `--prompt-template`: Prompt template string with column placeholders
 - `--prompt-template-file`: Path to file containing prompt template
-- `--output-col`: Column name to store Claude's responses (required)
-- `--system`: System prompt for Claude (default: "You are a helpful assistant.")
-- `--model`: Model to use (defaults to Sonnet-4.5, or gpt-5 when `--pydantic-model` is enabled)
+- `--output-col`: Column name to store LLM responses (required)
+- `--system`: System prompt for the selected LLM (default: "You are a helpful assistant.")
+- `--provider`: LLM provider (`anthropic`, `openai`, or `perplexity`; default: `anthropic`)
+- `--model`: Model to use (defaults to `claude-sonnet-4-20250514`, `gpt-5.2`, or `sonar-pro` depending on provider)
 - `--max-tokens`: Maximum tokens for response (default: 1000)
 - `--temperature`: Temperature setting (default: 1.0)
 - `--max-retries`: Number of retries after the initial attempt if the LLM response fails validation or is empty (default: 2 retries)
@@ -196,14 +213,16 @@ Options:
 You can also use the package programmatically:
 
 ```python
-from csv_to_llm import process_csv_with_claude
+from csv_to_llm import process_csv_with_llm
 
-process_csv_with_claude(
+process_csv_with_llm(
     input_csv_path="input.csv",
     output_csv_path="output.csv",
     prompt_template="Summarize: {text_column}",
     output_column="summary",
     system_prompt="You are a helpful assistant.",
+    provider="openai",
+    model="gpt-5.2",
     parallel=2,
     max_retries=2,
     # pydantic_model_path="models/schema.py",
@@ -219,8 +238,7 @@ When the optional Pydantic arguments are supplied, OpenAI Structured Outputs are
 ### Running Tests
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/
+uv run pytest tests/
 ```
 
 ### Project Structure
@@ -239,6 +257,7 @@ csv-to-llm/
 ├── scripts/
 │   ├── setup.sh
 │   └── run_tests.sh
+├── uv.lock
 ├── requirements.txt
 ├── setup.py
 ├── pyproject.toml

@@ -6,6 +6,11 @@ from .core import (
     process_csv_with_embeddings,
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
+    DEFAULT_PERPLEXITY_MODEL,
+    DEFAULT_PROVIDER,
+    SUPPORTED_LLM_PROVIDERS,
+    PROVIDER_OPENAI,
+    PROVIDER_PERPLEXITY,
 )
 from .auto import run_auto_mode
 from .embeddings import list_available_embedding_models
@@ -17,7 +22,7 @@ init(autoreset=True)
 def main():
     """Main CLI entry point for csv-to-llm."""
     parser = argparse.ArgumentParser(
-        description=f"{Fore.BLUE}csv-to-llm{Style.RESET_ALL}: Process CSV with Claude API using a prompt template.",
+        description=f"{Fore.BLUE}csv-to-llm{Style.RESET_ALL}: Process CSV rows with LLM APIs using a prompt template.",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--input", required=True, help="Input CSV file path")
@@ -26,8 +31,10 @@ def main():
     parser.add_argument("--prompt-template-file", help="Path to a text file containing the prompt template. Overrides --prompt-template if provided.")
     parser.add_argument("--output-col", help="Column to store responses (required unless --auto provides a default)")
     parser.add_argument("--system", default="You are a helpful assistant.",
-                        help="System prompt for Claude")
-    parser.add_argument("--model", help="Model to use (defaults differ for Anthropic vs OpenAI modes)")
+                        help="System prompt for the selected LLM")
+    parser.add_argument("--provider", choices=SUPPORTED_LLM_PROVIDERS,
+                        help="LLM provider to use for generation")
+    parser.add_argument("--model", help="Model to use (defaults differ by provider)")
     parser.add_argument("--max-tokens", type=int, default=1000, help="Maximum tokens for response")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature setting")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (INFO level)")
@@ -142,6 +149,9 @@ def main():
     if args.pydantic_model and args.embeddings:
         parser.error("--pydantic-model cannot be used together with --embeddings")
 
+    if args.pydantic_model and args.provider and args.provider != PROVIDER_OPENAI:
+        parser.error("--pydantic-model currently requires --provider openai")
+
     if args.pydantic_model_column_prefix and not args.pydantic_model:
         parser.error("--pydantic-model-column-prefix requires --pydantic-model")
 
@@ -154,9 +164,19 @@ def main():
     if args.max_retries < 0:
         parser.error("--max-retries must be zero or a positive integer")
 
+    resolved_provider = args.provider
+    if args.pydantic_model:
+        resolved_provider = resolved_provider or PROVIDER_OPENAI
+    else:
+        resolved_provider = resolved_provider or DEFAULT_PROVIDER
+
     resolved_model = args.model
     if args.pydantic_model:
         resolved_model = resolved_model or DEFAULT_OPENAI_MODEL
+    elif resolved_provider == PROVIDER_OPENAI:
+        resolved_model = resolved_model or DEFAULT_OPENAI_MODEL
+    elif resolved_provider == PROVIDER_PERPLEXITY:
+        resolved_model = resolved_model or DEFAULT_PERPLEXITY_MODEL
     else:
         resolved_model = resolved_model or DEFAULT_ANTHROPIC_MODEL
 
@@ -179,6 +199,7 @@ def main():
             prompt_template=prompt_template_value,
             output_column=args.output_col,
             system_prompt=args.system,
+            provider=resolved_provider,
             model=resolved_model,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
