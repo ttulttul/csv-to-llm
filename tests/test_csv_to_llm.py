@@ -75,6 +75,36 @@ class TestCsvToLlm:
                 "    webmail_clients: list[str]\n"
             )
         return model_path
+
+    @pytest.fixture
+    def user_hierarchy_pydantic_model(self, temp_dir):
+        """Create a nested User model for iterative structured output tests."""
+        model_path = os.path.join(temp_dir, "user_hierarchy_model.py")
+        with open(model_path, "w", encoding="utf-8") as f:
+            f.write(
+                "from pydantic import BaseModel\n\n"
+                "class Profile(BaseModel):\n"
+                "    first_name: str\n"
+                "    last_name: str\n"
+                "    age: int\n"
+                "    bio: str | None = None\n\n"
+                "class Address(BaseModel):\n"
+                "    street: str\n"
+                "    city: str\n"
+                "    state: str\n"
+                "    zip_code: str\n"
+                "    country: str = 'USA'\n\n"
+                "class AccountSettings(BaseModel):\n"
+                "    is_premium: bool = False\n"
+                "    receive_newsletter: bool = True\n"
+                "    theme: str = 'dark'\n\n"
+                "class User(BaseModel):\n"
+                "    id: int\n"
+                "    profile: Profile\n"
+                "    address: Address\n"
+                "    settings: AccountSettings\n"
+            )
+        return model_path
     
     @pytest.fixture
     def mock_anthropic_client(self):
@@ -514,6 +544,63 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             assert df.loc[0, 'llm_pricing_and_provisioning_custom_domain_support'] == True
             assert json.loads(df.loc[0, 'llm_webmail_clients']) == ["Roundcube"]
             assert 'llm_pricing_and_provisioning' not in df.columns
+
+    def test_iterative_structured_output_fills_one_leaf_field_at_a_time(self, user_hierarchy_pydantic_model):
+        """Iterative mode should query and reassemble nested models by leaf field."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=user_hierarchy_pydantic_model,
+            model_class_name="User",
+            output_field=None,
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+            iterate_fields=True,
+        )
+        values = {
+            "id": 42,
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "age": 36,
+            "bio": None,
+            "street": "1 Example St",
+            "city": "London",
+            "state": "London",
+            "zip_code": "SW1A",
+            "country": "UK",
+            "is_premium": True,
+            "receive_newsletter": False,
+            "theme": "light",
+        }
+
+        mock_client = Mock()
+
+        def parse_side_effect(**kwargs):
+            model_cls = kwargs["text_format"]
+            field_name = next(iter(model_cls.model_fields))
+            response = Mock()
+            response.output_parsed = model_cls(**{field_name: values[field_name]})
+            return response
+
+        mock_client.responses.parse.side_effect = parse_side_effect
+
+        parsed = csv_to_llm.call_openai_structured_iterative(
+            prompt_value="User record: Ada Lovelace",
+            structured_config=config,
+            openai_client=mock_client,
+        )
+
+        assert parsed.id == 42
+        assert parsed.profile.first_name == "Ada"
+        assert parsed.address.country == "UK"
+        assert parsed.settings.theme == "light"
+        assert mock_client.responses.parse.call_count == len(values)
+        prompts = [
+            call.kwargs["input"][1]["content"]
+            for call in mock_client.responses.parse.call_args_list
+        ]
+        assert any("first_name (of type str) of this User Profile" in prompt for prompt in prompts)
+        assert any("theme (of type str) of this User AccountSettings" in prompt for prompt in prompts)
 
     @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key'})
     def test_structured_output_invalid_field(self, sample_csv, output_csv_path, sample_pydantic_model):

@@ -46,6 +46,7 @@ def main():
     parser.add_argument("--pydantic-model-class", help="Class name of the BaseModel to use when multiple models are defined")
     parser.add_argument("--pydantic-model-field", help="Field on the Pydantic model to copy into --output-col")
     parser.add_argument("--pydantic-model-column-prefix", help="Prefix for extra columns populated from every Pydantic field (mutually exclusive with --pydantic-model-field)")
+    parser.add_argument("--pydantic-model-iterate", action="store_true", help="Fill structured outputs one leaf Pydantic field at a time")
 
     # --- Embedding specific options ---
     provider_choices = list(list_available_embedding_models().keys())
@@ -104,7 +105,7 @@ def main():
             parser.error("--auto cannot be combined with --embeddings")
         if args.prompt_template or args.prompt_template_file:
             parser.error("--auto cannot be combined with prompt template arguments")
-        if args.pydantic_model or args.pydantic_model_class or args.pydantic_model_field or args.pydantic_model_column_prefix:
+        if args.pydantic_model or args.pydantic_model_class or args.pydantic_model_field or args.pydantic_model_column_prefix or args.pydantic_model_iterate:
             parser.error("--auto cannot be combined with manual Pydantic arguments")
 
         auto_plan = run_auto_mode(
@@ -154,6 +155,9 @@ def main():
 
     if args.pydantic_model_column_prefix and not args.pydantic_model:
         parser.error("--pydantic-model-column-prefix requires --pydantic-model")
+
+    if args.pydantic_model_iterate and not args.pydantic_model:
+        parser.error("--pydantic-model-iterate requires --pydantic-model")
 
     if args.pydantic_model and args.pydantic_model_column_prefix and args.pydantic_model_field:
         parser.error("--pydantic-model-field cannot be combined with --pydantic-model-column-prefix")
@@ -211,6 +215,7 @@ def main():
             pydantic_model_class=args.pydantic_model_class,
             pydantic_model_field=args.pydantic_model_field,
             pydantic_model_column_prefix=args.pydantic_model_column_prefix,
+            pydantic_model_iterate=args.pydantic_model_iterate,
             max_retries=args.max_retries,
         )
 

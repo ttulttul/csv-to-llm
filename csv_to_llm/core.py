@@ -12,15 +12,16 @@ import inspect
 import hashlib
 import json
 import threading
+import types
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import Optional, Type, Tuple, List, Callable, Dict, Any, Iterable
+from typing import Optional, Type, Tuple, List, Callable, Dict, Any, Iterable, get_args, get_origin, Union
 from joblib import Memory
 from tqdm import tqdm
 from colorama import Fore, Style, init
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 from .embeddings import get_embedding
 
 # Initialize colorama for cross-platform colored output
@@ -47,6 +48,10 @@ DEFAULT_PROVIDER = PROVIDER_ANTHROPIC
 PERPLEXITY_BASE_URL = "https://api.perplexity.ai"
 
 _thread_local_clients = threading.local()
+_UNION_TYPES = tuple(
+    union_type for union_type in (Union, getattr(types, "UnionType", None))
+    if union_type is not None
+)
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,7 @@ class StructuredOutputConfig:
     max_output_tokens: int
     temperature: float
     system_prompt: str
+    iterate_fields: bool = False
 
 
 @dataclass
@@ -207,6 +213,7 @@ def build_structured_output_config(
     max_tokens: int,
     temperature: float,
     system_prompt: str,
+    iterate_fields: bool = False,
 ) -> StructuredOutputConfig:
     """Validate user-supplied structured output arguments and build config."""
 
@@ -222,6 +229,7 @@ def build_structured_output_config(
         max_output_tokens=max_tokens,
         temperature=temperature,
         system_prompt=system_prompt,
+        iterate_fields=iterate_fields,
     )
 
     model_cls = _get_pydantic_model_class(config.model_reference, config.class_name)
@@ -233,7 +241,7 @@ def build_structured_output_config(
     return config
 
 
-def call_openai_structured(prompt_value: str, structured_config: StructuredOutputConfig, openai_client: Optional[OpenAI] = None) -> str:
+def call_openai_structured(prompt_value: str, structured_config: StructuredOutputConfig, openai_client: Optional[OpenAI] = None) -> BaseModel:
     """Call OpenAI with Structured Outputs enabled and return the parsed BaseModel."""
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
@@ -255,6 +263,168 @@ def call_openai_structured(prompt_value: str, structured_config: StructuredOutpu
         raise RuntimeError("Structured output parsing failed: no parsed content returned")
 
     return parsed
+
+
+def _humanize_identifier(value: str) -> str:
+    """Convert Python identifiers into short prompt-friendly words."""
+
+    return value.replace("_", " ")
+
+
+def _annotation_model_class(annotation: Any) -> Optional[Type[BaseModel]]:
+    """Return a nested BaseModel class for direct or optional model annotations."""
+
+    if inspect.isclass(annotation) and issubclass(annotation, BaseModel):
+        return annotation
+
+    origin = get_origin(annotation)
+    if origin not in _UNION_TYPES:
+        return None
+
+    model_args = [
+        arg for arg in get_args(annotation)
+        if inspect.isclass(arg) and issubclass(arg, BaseModel)
+    ]
+    non_none_args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if len(model_args) == 1 and len(non_none_args) == 1:
+        return model_args[0]
+    return None
+
+
+def _annotation_display_name(annotation: Any) -> str:
+    """Return a compact type label for per-field extraction prompts."""
+
+    if hasattr(annotation, "__name__"):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+def _iter_structured_leaf_fields(
+    model_cls: Type[BaseModel],
+    path: Optional[List[str]] = None,
+    owner_names: Optional[List[str]] = None,
+) -> Iterable[Tuple[List[str], List[str], str, Any]]:
+    """Yield leaf fields from a model, recursing into nested BaseModel fields."""
+
+    current_path = path or []
+    current_owner_names = owner_names or [model_cls.__name__]
+
+    for field_name, field_info in model_cls.model_fields.items():
+        field_path = current_path + [field_name]
+        nested_model = _annotation_model_class(field_info.annotation)
+        if nested_model is not None:
+            yield from _iter_structured_leaf_fields(
+                nested_model,
+                path=field_path,
+                owner_names=current_owner_names + [nested_model.__name__],
+            )
+        else:
+            yield field_path, current_owner_names, field_name, field_info.annotation
+
+
+def _set_nested_value(target: Dict[str, Any], path: List[str], value: Any) -> None:
+    """Set a nested value inside a dictionary using a field path."""
+
+    cursor = target
+    for segment in path[:-1]:
+        cursor = cursor.setdefault(segment, {})
+    cursor[path[-1]] = value
+
+
+def _build_iterative_field_prompt(
+    base_prompt: str,
+    owner_names: List[str],
+    field_name: str,
+    annotation: Any,
+) -> str:
+    """Build the prompt used when extracting one structured field."""
+
+    owner_label = " ".join(_humanize_identifier(name) for name in owner_names)
+    return (
+        f"Respond with the {field_name} (of type {_annotation_display_name(annotation)}) "
+        f"of this {owner_label}.\n\nInput:\n{base_prompt}"
+    )
+
+
+def _call_openai_structured_field(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    field_name: str,
+    field_annotation: Any,
+    owner_names: List[str],
+    openai_client: OpenAI,
+) -> Any:
+    """Call OpenAI for a single leaf field using a temporary one-field model."""
+
+    field_model_name = "CsvToLlm" + "".join(part.title().replace("_", "") for part in owner_names + [field_name])
+    field_model = create_model(field_model_name, **{field_name: (field_annotation, ...)})
+    field_prompt = _build_iterative_field_prompt(
+        base_prompt=prompt_value,
+        owner_names=owner_names,
+        field_name=field_name,
+        annotation=field_annotation,
+    )
+
+    response = openai_client.responses.parse(
+        model=structured_config.llm_model,
+        input=[
+            {"role": "system", "content": structured_config.system_prompt},
+            {"role": "user", "content": field_prompt},
+        ],
+        text_format=field_model,
+        temperature=structured_config.temperature,
+        max_output_tokens=structured_config.max_output_tokens,
+    )
+
+    parsed = response.output_parsed
+    if parsed is None:
+        raise RuntimeError(f"Structured output parsing failed for field '{field_name}'")
+    return getattr(parsed, field_name)
+
+
+def call_openai_structured_iterative(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    openai_client: Optional[OpenAI] = None,
+) -> BaseModel:
+    """Fill a Pydantic model by asking OpenAI for one leaf field at a time."""
+
+    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
+    client = openai_client or OpenAI()
+    payload: Dict[str, Any] = {}
+
+    for field_path, owner_names, field_name, field_annotation in _iter_structured_leaf_fields(model_cls):
+        field_value = _call_openai_structured_field(
+            prompt_value=prompt_value,
+            structured_config=structured_config,
+            field_name=field_name,
+            field_annotation=field_annotation,
+            owner_names=owner_names,
+            openai_client=client,
+        )
+        _set_nested_value(payload, field_path, field_value)
+
+    return model_cls.model_validate(payload)
+
+
+def call_structured_openai(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    openai_client: Optional[OpenAI] = None,
+) -> BaseModel:
+    """Call OpenAI structured outputs in normal or per-field iterative mode."""
+
+    if structured_config.iterate_fields:
+        return call_openai_structured_iterative(
+            prompt_value=prompt_value,
+            structured_config=structured_config,
+            openai_client=openai_client,
+        )
+    return call_openai_structured(
+        prompt_value=prompt_value,
+        structured_config=structured_config,
+        openai_client=openai_client,
+    )
 
 
 def _extract_openai_response_text(response: Any) -> str:
@@ -506,7 +676,7 @@ def process_single_row(task: RowProcessingArgs):
     try:
         def _request(attempt: int):
             if structured_config:
-                parsed = call_openai_structured(
+                parsed = call_structured_openai(
                     prompt_value=prompt_value,
                     structured_config=structured_config,
                     openai_client=openai_client,
@@ -611,6 +781,7 @@ def process_csv_with_claude(
     pydantic_model_class=None,
     pydantic_model_field=None,
     pydantic_model_column_prefix=None,
+    pydantic_model_iterate=False,
     max_retries=2,
 ):
     """
@@ -634,6 +805,7 @@ def process_csv_with_claude(
         pydantic_model_class (str, optional): Name of the BaseModel subclass to use when the module contains multiple models.
         pydantic_model_field (str, optional): Field on the Pydantic model whose value should populate the output column (required unless column prefix is provided).
         pydantic_model_column_prefix (str, optional): When provided, populate additional columns for every Pydantic field using this prefix and serialize the entire model into the output column.
+        pydantic_model_iterate (bool): If True, ask the LLM to fill one leaf Pydantic field at a time and reassemble the full model.
         max_retries (int): Number of retries after the initial attempt if the LLM call fails or returns empty output.
     """
     # Load environment variables from .env file (needed for main process checks)
@@ -754,6 +926,7 @@ def process_csv_with_claude(
             max_tokens=max_tokens,
             temperature=temperature,
             system_prompt=system_prompt,
+            iterate_fields=pydantic_model_iterate,
         )
         openai_api_key = os.getenv("OPENAI_API_KEY")
         if not openai_api_key:
@@ -902,7 +1075,7 @@ def process_csv_with_claude(
 
                 def _request(attempt: int):
                     if structured_output_config:
-                        parsed = call_openai_structured(
+                        parsed = call_structured_openai(
                             prompt_value=prompt_value,
                             structured_config=structured_output_config,
                             openai_client=openai_client,

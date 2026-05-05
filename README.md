@@ -15,6 +15,7 @@ A Python package that processes CSV files by sending templated prompts to OpenAI
 - **Automatic Retries**: Re-attempt failed or empty generations up to a configurable number of times
 - **Provider Selection**: Generate text with Anthropic Messages, OpenAI Responses, or Perplexity Sonar
 - **Structured Outputs**: Enforce schemas defined in user-supplied Pydantic models via OpenAI's structured responses
+- **Iterative Structured Outputs**: Optionally fill large nested Pydantic models one leaf field at a time
 - **Auto Schema Mode**: Provide a single instruction via `--auto` and let the tool synthesize a Pydantic model and prompt automatically
 
 ## Installation
@@ -162,6 +163,7 @@ Notes:
 - `--model` should reference an OpenAI model that supports Structured Outputs.
 - Structured outputs cannot be combined with `--embeddings`.
 - Use `--pydantic-model-column-prefix` (for example, `--pydantic-model-column-prefix llm_`) to populate every field from the Pydantic model into its own column such as `llm_category`, `llm_explanation`, etc. Nested objects are flattened into column names such as `llm_pricing_and_provisioning_cost_structure`. Lists and other compound values are serialized as JSON. The entire structured response is also stored as JSON in `--output-col`. This option is mutually exclusive with `--pydantic-model-field`.
+- Use `--pydantic-model-iterate` for large or deeply nested schemas. The tool will ask the LLM for each leaf field separately, then reassemble and validate the original Pydantic model. This increases API calls but can improve reliability for complex schemas.
 
 ### Auto Mode
 
@@ -203,6 +205,7 @@ Options:
 - `--pydantic-model-class`: BaseModel class name when multiple models are defined in the same module
 - `--pydantic-model-field`: Field on the BaseModel whose value is stored in `--output-col` (required unless `--pydantic-model-column-prefix` is provided)
 - `--pydantic-model-column-prefix`: When set, populate additional columns for every BaseModel field using the provided prefix, and store the entire structured response (as JSON) in `--output-col`; mutually exclusive with `--pydantic-model-field`
+- `--pydantic-model-iterate`: Fill structured output leaf fields one at a time, recursing into nested BaseModel fields before validating the full model
 - `--auto`: One-shot instruction to auto-generate a Pydantic model, prompt template, and output column
 - `--auto-sample-size`: Number of rows to include when designing the auto schema (default: 5)
 
