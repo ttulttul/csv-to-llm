@@ -124,26 +124,22 @@ csv-to-llm \
 
 Provide a Pydantic model file (or module) and tell the CLI which field to copy into the output column. The request will be routed through OpenAI's Structured Outputs API and validated against the schema.
 
-```python
-# my_model.py
-from pydantic import BaseModel
+The `examples/` directory includes two ready-to-use email classification schemas:
 
-class EmailCategory(BaseModel):
-    category: str
-    explanation: str
-```
+- `examples/email_category_model.py`: richer classification with category, action-required flag, project, and custom labels.
+- `examples/email_classification_broad_model.py`: broader high-level category plus optional labels.
 
 ```bash
 csv-to-llm \
   --input input.csv \
   --output output.csv \
-  --prompt-template "Categorize the subject using the supplied schema: {subject}" \
-  --output-col category \
+  --prompt-template "Categorize this email using the supplied schema. Subject: {subject}" \
+  --output-col content_category \
   --provider openai \
   --model gpt-5.2 \
-  --pydantic-model my_model.py \
+  --pydantic-model examples/email_category_model.py \
   --pydantic-model-class EmailCategory \
-  --pydantic-model-field category
+  --pydantic-model-field content_category
 ```
 
 If you instead want every Pydantic field to land in the CSV, skip `--pydantic-model-field` and supply a prefix:
@@ -154,7 +150,9 @@ csv-to-llm \
   --output output.csv \
   --prompt-template "Categorize the subject using the supplied schema: {subject}" \
   --output-col structured_payload \
-  --pydantic-model my_model.py \
+  --provider openai \
+  --pydantic-model examples/email_classification_broad_model.py \
+  --pydantic-model-class EmailClassification \
   --pydantic-model-column-prefix llm_
 ```
 

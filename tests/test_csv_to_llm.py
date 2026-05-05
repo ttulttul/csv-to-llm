@@ -485,8 +485,35 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
                 pydantic_model_path=sample_pydantic_model,
                 pydantic_model_class="EmailCategory",
                 pydantic_model_field="category",
-                pydantic_model_column_prefix="llm_",
-            )
+                    pydantic_model_column_prefix="llm_",
+                )
+
+    def test_example_pydantic_models_are_loadable(self):
+        """Bundled example schemas should be usable as structured-output models."""
+        category_model = os.path.abspath("examples/email_category_model.py")
+        broad_model = os.path.abspath("examples/email_classification_broad_model.py")
+
+        category_config = csv_to_llm.build_structured_output_config(
+            model_reference=category_model,
+            model_class_name="EmailCategory",
+            output_field="content_category",
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+        )
+        broad_config = csv_to_llm.build_structured_output_config(
+            model_reference=broad_model,
+            model_class_name="EmailClassification",
+            output_field="category",
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+        )
+
+        assert category_config.output_field == "content_category"
+        assert broad_config.output_field == "category"
 
     def test_column_prefix_requires_pydantic_model(self, sample_csv, output_csv_path):
         """Providing a prefix without a Pydantic model should raise."""
