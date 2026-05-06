@@ -14,6 +14,7 @@ from .core import (
     DEFAULT_PERPLEXITY_STRUCTURED_PRESET,
     PROVIDER_OPENAI,
     PROVIDER_PERPLEXITY,
+    _get_perplexity_api_key,
     _openai_web_search_tools,
     _perplexity_response_format,
     _perplexity_web_search_tools,
@@ -129,7 +130,7 @@ def _run_perplexity_auto_design(
     model_websearch: bool,
     perplexity_client: Optional[Perplexity],
 ) -> AutoModelDesign:
-    client = perplexity_client or Perplexity()
+    client = perplexity_client or Perplexity(api_key=_get_perplexity_api_key())
     request_kwargs = {
         "preset": model_name,
         "input": _auto_design_user_text(instruction, columns_meta, sample_payload),

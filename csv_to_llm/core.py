@@ -133,12 +133,20 @@ def _get_thread_local_openai_client() -> OpenAI:
     return client
 
 
-def _get_thread_local_perplexity_client() -> OpenAI:
-    """Fetch (or create) a thread-local Perplexity client for reuse."""
+def _get_perplexity_api_key() -> str:
+    """Load and return the Perplexity API key from the environment."""
 
+    load_dotenv()
     api_key = os.getenv("PERPLEXITY_API_KEY")
     if not api_key:
         raise RuntimeError("PERPLEXITY_API_KEY not found in environment variables")
+    return api_key
+
+
+def _get_thread_local_perplexity_client() -> OpenAI:
+    """Fetch (or create) a thread-local Perplexity client for reuse."""
+
+    api_key = _get_perplexity_api_key()
 
     client = getattr(_thread_local_clients, "perplexity_client", None)
     if client is None:
@@ -150,9 +158,7 @@ def _get_thread_local_perplexity_client() -> OpenAI:
 def _get_thread_local_perplexity_responses_client() -> Perplexity:
     """Fetch (or create) a thread-local Perplexity SDK client for Responses API calls."""
 
-    api_key = os.getenv("PERPLEXITY_API_KEY")
-    if not api_key:
-        raise RuntimeError("PERPLEXITY_API_KEY not found in environment variables")
+    api_key = _get_perplexity_api_key()
 
     client = getattr(_thread_local_clients, "perplexity_responses_client", None)
     if client is None:
@@ -341,7 +347,7 @@ def call_perplexity_structured(
     """Call Perplexity with JSON Schema structured outputs and return the parsed BaseModel."""
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
-    client = perplexity_client or Perplexity()
+    client = perplexity_client or Perplexity(api_key=_get_perplexity_api_key())
     request_kwargs = {
         "preset": structured_config.llm_model,
         "input": prompt_value,

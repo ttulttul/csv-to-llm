@@ -1197,6 +1197,35 @@ class TestAutoMode:
         assert create_kwargs["response_format"]["type"] == "json_schema"
         assert create_kwargs["response_format"]["json_schema"]["name"] == "AutoModelDesign"
 
+    @patch.dict(os.environ, {"PERPLEXITY_API_KEY": "test_perplexity_key"})
+    @patch("csv_to_llm.auto.Perplexity")
+    def test_run_auto_mode_perplexity_loads_api_key_from_env(self, mock_perplexity, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"subject": ["Hello"], "body": ["a"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_perplexity.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="EmailCategory",
+            python_code="from pydantic import BaseModel\n\nclass EmailCategory(BaseModel):\n    category: str\n",
+            primary_field="category",
+            prompt_template="Classify this subject: {subject}",
+            output_column_name="llm_category",
+        )
+        mock_response.output_text = design.model_dump_json()
+        mock_client.responses.create.return_value = mock_response
+
+        run_auto_mode(
+            instruction="Categorize",
+            input_csv_path=csv_path,
+            sample_size=1,
+            provider="perplexity",
+            model="pro-search",
+        )
+
+        mock_perplexity.assert_called_once_with(api_key="test_perplexity_key")
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
