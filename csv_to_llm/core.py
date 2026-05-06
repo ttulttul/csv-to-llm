@@ -83,8 +83,42 @@ def _response_schema_name(raw_name: str) -> str:
     return f"{cleaned[:52]}{digest}"[:64]
 
 
-def _extract_prompt_fields(prompt_template: str) -> List[str]:
+def _extract_prompt_fields(prompt_template: str, valid_fields: Optional[set[str]] = None) -> List[str]:
     """Extract format fields while ignoring escaped literal braces."""
+
+    if valid_fields is not None:
+        fields = []
+        placeholder_tokens = sorted(
+            ((f"{{{field}}}", field) for field in valid_fields),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        )
+        i = 0
+        while i < len(prompt_template):
+            if prompt_template.startswith("{{", i) or prompt_template.startswith("}}", i):
+                i += 2
+                continue
+
+            matched_placeholder = False
+            for token, field in placeholder_tokens:
+                if prompt_template.startswith(token, i):
+                    fields.append(field)
+                    i += len(token)
+                    matched_placeholder = True
+                    break
+            if matched_placeholder:
+                continue
+
+            if prompt_template[i] == "{":
+                end = prompt_template.find("}", i + 1)
+                if end != -1:
+                    field_name = prompt_template[i + 1:end].split("!", 1)[0].split(":", 1)[0]
+                    if field_name:
+                        fields.append(field_name)
+                    i = end + 1
+                    continue
+            i += 1
+        return fields
 
     fields = []
     for _, field_name, _, _ in Formatter().parse(prompt_template):
@@ -94,6 +128,41 @@ def _extract_prompt_fields(prompt_template: str) -> List[str]:
         if field_name:
             fields.append(field_name)
     return fields
+
+
+def _render_prompt_template(prompt_template: str, values: Dict[str, Any], required_fields: List[str]) -> str:
+    """Render a prompt template using exact CSV column placeholder tokens."""
+
+    placeholder_tokens = sorted(
+        ((f"{{{field}}}", field) for field in required_fields),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+    result = []
+    i = 0
+    while i < len(prompt_template):
+        if prompt_template.startswith("{{", i):
+            result.append("{")
+            i += 2
+            continue
+        if prompt_template.startswith("}}", i):
+            result.append("}")
+            i += 2
+            continue
+
+        matched_placeholder = False
+        for token, field in placeholder_tokens:
+            if prompt_template.startswith(token, i):
+                result.append(str(values[field]))
+                i += len(token)
+                matched_placeholder = True
+                break
+        if matched_placeholder:
+            continue
+
+        result.append(prompt_template[i])
+        i += 1
+    return "".join(result)
 
 
 @dataclass(frozen=True)
@@ -906,7 +975,7 @@ def process_single_row(task: RowProcessingArgs):
         return task.index, None, "Missing data for prompt template"
 
     try:
-        prompt_value = task.prompt_template.format(**format_dict)
+        prompt_value = _render_prompt_template(task.prompt_template, format_dict, task.required_columns)
     except KeyError as e:
         return task.index, None, f"Formatting error (likely missing column in template): {e}"
     except TypeError as e:
@@ -1098,7 +1167,7 @@ def process_csv_with_claude(
         return
 
     # Extract required placeholders from the prompt template
-    required_columns = _extract_prompt_fields(prompt_template)
+    required_columns = _extract_prompt_fields(prompt_template, set(df.columns))
     if not required_columns:
         raise ValueError(
             "Prompt template must contain at least one column identifier enclosed in curly braces, "
@@ -1329,7 +1398,7 @@ def process_csv_with_claude(
                     continue
 
                 try:
-                    prompt_value = task.prompt_template.format(**format_dict)
+                    prompt_value = _render_prompt_template(task.prompt_template, format_dict, task.required_columns)
                 except KeyError as e:
                     tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {task.index+1} due to formatting error: {e}")
                     pbar.update(1)
@@ -1441,7 +1510,7 @@ def process_csv_with_embeddings(
         print(f"{Fore.RED}✗{Style.RESET_ALL} Error loading CSV: {e}")
         return
 
-    required_columns = _extract_prompt_fields(prompt_template)
+    required_columns = _extract_prompt_fields(prompt_template, set(df.columns))
     if not required_columns:
         raise ValueError("Prompt template requires at least one {column} placeholder.")
 
@@ -1490,7 +1559,7 @@ def process_csv_with_embeddings(
             row_dict[col] = row.iloc[col_idx] if 0 <= col_idx < len(row) else pd.NA
 
         try:
-            prompt_value = prompt_template.format(**row_dict)
+            prompt_value = _render_prompt_template(prompt_template, row_dict, required_columns)
         except Exception as e:
             print(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Row {idx+1} formatting error: {e}")
             continue

@@ -181,6 +181,30 @@ def _escape_non_column_braces(prompt_template: str, valid_fields: set[str]) -> s
     return "".join(result)
 
 
+def _escape_unknown_prompt_fields(prompt_template: str, valid_fields: set[str]) -> str:
+    """Escape any remaining format fields that are not CSV columns."""
+
+    result = []
+    last_end = 0
+    for match in re.finditer(r"\{([^{}]+)\}", prompt_template):
+        raw_field = match.group(1)
+        if raw_field in valid_fields:
+            continue
+        field_name = raw_field.split("!", 1)[0].split(":", 1)[0]
+        if field_name in valid_fields:
+            continue
+        result.append(prompt_template[last_end:match.start()])
+        result.append("{{")
+        result.append(raw_field)
+        result.append("}}")
+        last_end = match.end()
+
+    if not result:
+        return prompt_template
+    result.append(prompt_template[last_end:])
+    return "".join(result)
+
+
 def run_auto_mode(
     instruction: str,
     input_csv_path: str,
@@ -248,12 +272,23 @@ def run_auto_mode(
     )
 
     prompt_template = _escape_non_column_braces(design.prompt_template.strip(), set(df.columns))
-    placeholders = _extract_prompt_fields(prompt_template)
+    valid_fields = set(df.columns)
+    placeholders = _extract_prompt_fields(prompt_template, valid_fields)
     missing = [ph for ph in placeholders if ph not in df.columns]
     if missing:
-        raise ValueError(
-            "Auto-generated prompt references unknown columns: " + ", ".join(missing)
-        )
+        prompt_template = _escape_unknown_prompt_fields(prompt_template, valid_fields)
+        placeholders = _extract_prompt_fields(prompt_template, valid_fields)
+        missing = [ph for ph in placeholders if ph not in df.columns]
+        if missing:
+            prompt_template = _escape_non_column_braces(prompt_template, valid_fields)
+            placeholders = _extract_prompt_fields(prompt_template, valid_fields)
+            missing = [ph for ph in placeholders if ph not in df.columns]
+        if missing:
+            raise ValueError(
+                "Auto-generated prompt references unknown columns: " + ", ".join(missing)
+            )
+    if not placeholders:
+        raise ValueError("Auto-generated prompt does not reference any CSV columns")
 
     return AutoPlan(
         prompt_template=prompt_template,

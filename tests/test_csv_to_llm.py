@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 # Import the module under test
 from csv_to_llm import core as csv_to_llm
 from csv_to_llm.core import RowProcessingArgs
-from csv_to_llm.auto import run_auto_mode, AutoModelDesign
+from csv_to_llm.auto import run_auto_mode, AutoModelDesign, _escape_unknown_prompt_fields
 
 
 class TestCsvToLlm:
@@ -1290,6 +1290,45 @@ class TestAutoMode:
 
         formatted = plan.prompt_template.format(**{"Provider Name": "Shopify"})
         assert formatted == 'Classify Shopify. Return JSON: {"label": "{Fit}"}'
+
+    def test_auto_prompt_escapes_remaining_unknown_fields(self):
+        prompt = "Classify {Provider Name}. Use {Fit} as the label."
+        escaped = _escape_unknown_prompt_fields(prompt, {"Provider Name"})
+
+        assert escaped.format(**{"Provider Name": "Shopify"}) == "Classify Shopify. Use {Fit} as the label."
+
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_supports_column_names_with_colons(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"Provider Name": ["Shopify"], "Fit: SMTP Relay": ["Poor Fit"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="HostingClassification",
+            python_code="from pydantic import BaseModel\n\nclass HostingClassification(BaseModel):\n    fit: str\n",
+            primary_field="fit",
+            prompt_template="Classify {Provider Name}. Existing SMTP relay fit: {Fit: SMTP Relay}",
+            output_column_name="hosting_classification",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="Is this company a traditional web hosting provider?",
+            input_csv_path=csv_path,
+            sample_size=1,
+            model="gpt-test",
+            openai_client=None,
+        )
+
+        rendered = csv_to_llm._render_prompt_template(
+            plan.prompt_template,
+            {"Provider Name": "Shopify", "Fit: SMTP Relay": "Poor Fit"},
+            ["Provider Name", "Fit: SMTP Relay"],
+        )
+        assert rendered == "Classify Shopify. Existing SMTP relay fit: Poor Fit"
 
 
 if __name__ == "__main__":
