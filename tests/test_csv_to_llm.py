@@ -651,6 +651,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             temperature=0,
             system_prompt="system",
             provider="perplexity",
+            model_websearch=True,
         )
         mock_client = Mock()
         mock_response = Mock()
@@ -672,6 +673,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert kwargs["input"] == "Categorize this"
         assert kwargs["instructions"] == "system"
         assert kwargs["max_output_tokens"] == 1000
+        assert kwargs["tools"] == [{"type": "web_search"}, {"type": "fetch_url"}]
         assert kwargs["response_format"]["type"] == "json_schema"
         assert kwargs["response_format"]["json_schema"]["name"] == "EmailCategory"
         assert kwargs["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
@@ -945,6 +947,32 @@ class TestCachedApiCall(TestCsvToLlm):
         assert response == "Perplexity response"
         mock_client.chat.completions.create.assert_called_once()
 
+    def test_perplexity_responses_api_call_with_web_search(self):
+        """Perplexity text generation can enable Responses web search tools."""
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.output_text = "Perplexity response"
+        mock_client.responses.create.return_value = mock_response
+
+        response = csv_to_llm.call_perplexity_api_uncached(
+            client=mock_client,
+            model="sonar-pro",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="Test system",
+            prompt_value="Test prompt",
+            model_websearch=True,
+        )
+
+        assert response == "Perplexity response"
+        kwargs = mock_client.responses.create.call_args.kwargs
+        assert kwargs["model"] == "sonar-pro"
+        assert kwargs["input"] == "Test prompt"
+        assert kwargs["instructions"] == "Test system"
+        assert kwargs["max_output_tokens"] == 1000
+        assert kwargs["tools"] == [{"type": "web_search"}, {"type": "fetch_url"}]
+        mock_client.chat.completions.create.assert_not_called()
+
 
 class TestParallelProcessing(TestCsvToLlm):
     
@@ -1154,6 +1182,7 @@ class TestAutoMode:
             sample_size=2,
             provider="perplexity",
             model="pro-search",
+            model_websearch=True,
             output_column=None,
             perplexity_client=mock_client,
         )
@@ -1164,6 +1193,7 @@ class TestAutoMode:
         assert plan.output_column == "llm_category"
         create_kwargs = mock_client.responses.create.call_args.kwargs
         assert create_kwargs["preset"] == "pro-search"
+        assert create_kwargs["tools"] == [{"type": "web_search"}, {"type": "fetch_url"}]
         assert create_kwargs["response_format"]["type"] == "json_schema"
         assert create_kwargs["response_format"]["json_schema"]["name"] == "AutoModelDesign"
 

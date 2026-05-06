@@ -16,6 +16,7 @@ from .core import (
     PROVIDER_PERPLEXITY,
     _openai_web_search_tools,
     _perplexity_response_format,
+    _perplexity_web_search_tools,
 )
 
 
@@ -125,15 +126,20 @@ def _run_perplexity_auto_design(
     columns_meta: list[dict],
     sample_payload: list[dict],
     model_name: str,
+    model_websearch: bool,
     perplexity_client: Optional[Perplexity],
 ) -> AutoModelDesign:
     client = perplexity_client or Perplexity()
-    response = client.responses.create(
-        preset=model_name,
-        input=_auto_design_user_text(instruction, columns_meta, sample_payload),
-        instructions=_auto_design_system_prompt(),
-        response_format=_perplexity_response_format(AutoModelDesign, AutoModelDesign.__name__),
-    )
+    request_kwargs = {
+        "preset": model_name,
+        "input": _auto_design_user_text(instruction, columns_meta, sample_payload),
+        "instructions": _auto_design_system_prompt(),
+        "response_format": _perplexity_response_format(AutoModelDesign, AutoModelDesign.__name__),
+    }
+    tools = _perplexity_web_search_tools(model_websearch)
+    if tools:
+        request_kwargs["tools"] = tools
+    response = client.responses.create(**request_kwargs)
 
     output_text = getattr(response, "output_text", None)
     if not output_text:
@@ -186,6 +192,7 @@ def run_auto_mode(
             columns_meta=columns_meta,
             sample_payload=sample_payload,
             model_name=model_name,
+            model_websearch=model_websearch,
             perplexity_client=perplexity_client,
         )
     else:

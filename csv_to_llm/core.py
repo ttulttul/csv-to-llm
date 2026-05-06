@@ -64,6 +64,14 @@ def _openai_web_search_tools(enabled: bool) -> Optional[List[Dict[str, str]]]:
     return [{"type": "web_search"}]
 
 
+def _perplexity_web_search_tools(enabled: bool) -> Optional[List[Dict[str, str]]]:
+    """Return the Perplexity Responses web search tool list when enabled."""
+
+    if not enabled:
+        return None
+    return [{"type": "web_search"}, {"type": "fetch_url"}]
+
+
 def _response_schema_name(raw_name: str) -> str:
     """Build a 1-64 character alphanumeric JSON schema name for provider APIs."""
 
@@ -334,13 +342,17 @@ def call_perplexity_structured(
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
     client = perplexity_client or Perplexity()
-    response = client.responses.create(
-        preset=structured_config.llm_model,
-        input=prompt_value,
-        instructions=structured_config.system_prompt,
-        max_output_tokens=structured_config.max_output_tokens,
-        response_format=_perplexity_response_format(model_cls, model_cls.__name__),
-    )
+    request_kwargs = {
+        "preset": structured_config.llm_model,
+        "input": prompt_value,
+        "instructions": structured_config.system_prompt,
+        "max_output_tokens": structured_config.max_output_tokens,
+        "response_format": _perplexity_response_format(model_cls, model_cls.__name__),
+    }
+    tools = _perplexity_web_search_tools(structured_config.model_websearch)
+    if tools:
+        request_kwargs["tools"] = tools
+    response = client.responses.create(**request_kwargs)
 
     output_text = getattr(response, "output_text", None)
     if not output_text:
@@ -727,10 +739,28 @@ def _call_openai_api(client, model, max_tokens, temperature, system_prompt, prom
     return response_text
 
 
-def _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value):
+def _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch=False):
     """Internal helper that performs a Perplexity Sonar chat completion call."""
 
     logger.info("Sending request to Perplexity model '%s'. Prompt: %s", model, prompt_value)
+    if model_websearch:
+        response = client.responses.create(
+            model=model,
+            input=prompt_value,
+            instructions=system_prompt,
+            max_output_tokens=max_tokens,
+            tools=_perplexity_web_search_tools(model_websearch),
+        )
+        response_text = getattr(response, "output_text", "")
+        if response_text:
+            logger.info("Received response from Perplexity. Response: %s", response_text)
+            return response_text
+
+        warning_msg = "Warning: Unexpected Perplexity Responses API response structure."
+        print(warning_msg)
+        logger.warning("Unexpected Perplexity Responses API response: %s", response)
+        return ""
+
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -771,12 +801,12 @@ def call_openai_api_uncached(client, model, max_tokens, temperature, system_prom
 
 
 @memory.cache(ignore=['client'])
-def call_perplexity_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
-    return _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+def call_perplexity_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch=False):
+    return _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch)
 
 
-def call_perplexity_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value):
-    return _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+def call_perplexity_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch=False):
+    return _call_perplexity_api(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch)
 # --- End Cached API Call ---
 
 
@@ -823,7 +853,7 @@ def call_llm_api(
         "system_prompt": system_prompt,
         "prompt_value": prompt_value,
     }
-    if provider == PROVIDER_OPENAI:
+    if provider in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
         request_kwargs["model_websearch"] = model_websearch
 
     return request_fn(**request_kwargs)
@@ -1000,7 +1030,7 @@ def process_csv_with_claude(
         pydantic_model_field (str, optional): Field on the Pydantic model whose value should populate the output column (required unless column prefix is provided).
         pydantic_model_column_prefix (str, optional): When provided, populate additional columns for every Pydantic field using this prefix and serialize the entire model into the output column.
         pydantic_model_iterate (bool): If True, ask the LLM to fill one leaf Pydantic field at a time and reassemble the full model.
-        model_websearch (bool): If True, enable OpenAI Responses web search tools for model calls.
+        model_websearch (bool): If True, enable provider web search tools for OpenAI or Perplexity model calls.
         max_retries (int): Number of retries after the initial attempt if the LLM call fails or returns empty output.
     """
     # Load environment variables from .env file (needed for main process checks)
@@ -1015,8 +1045,8 @@ def process_csv_with_claude(
         )
     if pydantic_model_path and provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
         raise ValueError("Structured outputs currently require provider='openai' or provider='perplexity'")
-    if model_websearch and provider != PROVIDER_OPENAI:
-        raise ValueError("--model-websearch currently requires provider='openai'")
+    if model_websearch and provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
+        raise ValueError("--model-websearch currently requires provider='openai' or provider='perplexity'")
     if pydantic_model_iterate and provider != PROVIDER_OPENAI:
         raise ValueError("--pydantic-model-iterate currently requires provider='openai'")
     

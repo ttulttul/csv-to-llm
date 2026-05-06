@@ -36,7 +36,7 @@ def main():
     parser.add_argument("--provider", choices=SUPPORTED_LLM_PROVIDERS,
                         help="LLM provider to use for generation")
     parser.add_argument("--model", help="Model to use (defaults differ by provider)")
-    parser.add_argument("--model-websearch", action="store_true", help="Enable OpenAI Responses web search for model calls")
+    parser.add_argument("--model-websearch", action="store_true", help="Enable provider web search tools for OpenAI or Perplexity model calls")
     parser.add_argument("--max-tokens", type=int, default=1000, help="Maximum tokens for response")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature setting")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (INFO level)")
@@ -113,8 +113,6 @@ def main():
         auto_provider = args.provider or PROVIDER_OPENAI
         if auto_provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
             parser.error("--auto currently requires --provider openai or --provider perplexity")
-        if args.model_websearch and auto_provider != PROVIDER_OPENAI:
-            parser.error("--model-websearch currently requires --provider openai")
         auto_model = args.model
         if auto_model is None:
             auto_model = (
@@ -190,8 +188,8 @@ def main():
     else:
         resolved_provider = resolved_provider or DEFAULT_PROVIDER
 
-    if args.model_websearch and resolved_provider != PROVIDER_OPENAI:
-        parser.error("--model-websearch currently requires --provider openai")
+    if args.model_websearch and resolved_provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
+        parser.error("--model-websearch currently requires --provider openai or --provider perplexity")
 
     if args.pydantic_model and resolved_provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
         parser.error("--pydantic-model currently requires --provider openai or --provider perplexity")

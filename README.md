@@ -182,7 +182,7 @@ Options:
 - `--auto-sample-size`: Number of rows (default 5) included in the schema-design request.
 - Auto mode supports `--provider openai` and `--provider perplexity`. With no provider, it defaults to OpenAI for backward compatibility.
 - With `--provider perplexity`, schema design and structured extraction use the Perplexity Responses API preset from `--model`, defaulting to `pro-search`.
-- `--model-websearch` is available only with OpenAI auto mode. Any manual prompt or Pydantic arguments are ignored/forbidden in auto mode.
+- `--model-websearch` is available with OpenAI and Perplexity auto mode. Any manual prompt or Pydantic arguments are ignored/forbidden in auto mode.
 
 ## Command Line Options
 
@@ -194,7 +194,7 @@ Options:
 - `--system`: System prompt for the selected LLM (default: "You are a helpful assistant.")
 - `--provider`: LLM provider (`anthropic`, `openai`, or `perplexity`; default: `anthropic`)
 - `--model`: Model or preset to use (defaults to `claude-sonnet-4-20250514`, `gpt-5.4-mini`, or `sonar-pro` depending on provider; Perplexity structured outputs default to `pro-search`)
-- `--model-websearch`: Enable OpenAI Responses web search via `tools=[{"type": "web_search"}]` for model calls
+- `--model-websearch`: Enable provider web search tools for OpenAI or Perplexity model calls
 - `--max-tokens`: Maximum tokens for response (default: 1000)
 - `--temperature`: Temperature setting (default: 1.0)
 - `--max-retries`: Number of retries after the initial attempt if the LLM response fails validation or is empty (default: 2 retries)
