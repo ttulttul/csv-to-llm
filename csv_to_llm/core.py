@@ -13,7 +13,7 @@ import hashlib
 import json
 import threading
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 from typing import Optional, Type, Tuple, List, Callable, Dict, Any, Iterable, get_args, get_origin, Union
@@ -66,6 +66,7 @@ class StructuredOutputConfig:
     temperature: float
     system_prompt: str
     iterate_fields: bool = False
+    iterate_parallelism: int = 1
 
 
 @dataclass
@@ -214,6 +215,7 @@ def build_structured_output_config(
     temperature: float,
     system_prompt: str,
     iterate_fields: bool = False,
+    iterate_parallelism: int = 1,
 ) -> StructuredOutputConfig:
     """Validate user-supplied structured output arguments and build config."""
 
@@ -230,6 +232,7 @@ def build_structured_output_config(
         temperature=temperature,
         system_prompt=system_prompt,
         iterate_fields=iterate_fields,
+        iterate_parallelism=max(1, int(iterate_parallelism)),
     )
 
     model_cls = _get_pydantic_model_class(config.model_reference, config.class_name)
@@ -406,9 +409,11 @@ def call_openai_structured_iterative(
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
     client = openai_client or OpenAI()
     payload: Dict[str, Any] = {}
+    leaf_fields = list(_iter_structured_leaf_fields(model_cls))
 
-    for field_path, owner_names, field_name, field_annotation in _iter_structured_leaf_fields(model_cls):
-        field_value = _call_openai_structured_field(
+    def fetch_field(field_spec: Tuple[List[str], List[str], str, Any]) -> Tuple[List[str], Any]:
+        field_path, owner_names, field_name, field_annotation = field_spec
+        return field_path, _call_openai_structured_field(
             prompt_value=prompt_value,
             structured_config=structured_config,
             field_name=field_name,
@@ -416,7 +421,21 @@ def call_openai_structured_iterative(
             owner_names=owner_names,
             openai_client=client,
         )
-        _set_nested_value(payload, field_path, field_value)
+
+    if structured_config.iterate_parallelism <= 1 or len(leaf_fields) <= 1:
+        for field_spec in leaf_fields:
+            field_path, field_value = fetch_field(field_spec)
+            _set_nested_value(payload, field_path, field_value)
+    else:
+        max_workers = min(structured_config.iterate_parallelism, len(leaf_fields))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_field = {
+                executor.submit(fetch_field, field_spec): field_spec
+                for field_spec in leaf_fields
+            }
+            for future in concurrent.futures.as_completed(future_to_field):
+                field_path, field_value = future.result()
+                _set_nested_value(payload, field_path, field_value)
 
     return model_cls.model_validate(payload)
 
@@ -439,6 +458,14 @@ def call_structured_openai(
         structured_config=structured_config,
         openai_client=openai_client,
     )
+
+
+def _iterative_field_parallelism(parallel: int, total_tasks: int) -> int:
+    """Allocate unused row-worker capacity to iterative field extraction."""
+
+    parallel_budget = max(1, int(parallel))
+    active_row_workers = max(1, min(parallel_budget, max(1, total_tasks)))
+    return max(1, parallel_budget // active_row_workers)
 
 
 def _extract_openai_response_text(response: Any) -> str:
@@ -974,6 +1001,12 @@ def process_csv_with_claude(
     if total_tasks == 0:
         print(f"{Fore.GREEN}✓{Style.RESET_ALL} No rows require processing")
         return
+
+    if structured_output_config and structured_output_config.iterate_fields:
+        structured_output_config = replace(
+            structured_output_config,
+            iterate_parallelism=_iterative_field_parallelism(parallel, total_tasks),
+        )
 
     if parallel > 1:
         print(f"{Fore.BLUE}⚡{Style.RESET_ALL} Starting parallel processing with {Fore.CYAN}{parallel}{Style.RESET_ALL} workers")

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch, MagicMock
 import re
 import sys
 import json
+from dataclasses import replace
 from enum import Enum
 from pydantic import BaseModel
 
@@ -584,6 +585,7 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
 
         mock_client.responses.parse.side_effect = parse_side_effect
 
+        config = replace(config, iterate_parallelism=4)
         parsed = csv_to_llm.call_openai_structured_iterative(
             prompt_value="User record: Ada Lovelace",
             structured_config=config,
@@ -615,6 +617,13 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
 
         assert len(model_name) <= 64
         assert model_name.startswith("CsvToLlm")
+
+    def test_iterative_field_parallelism_uses_unused_parallel_budget(self):
+        """Iterative field extraction should use spare parallel capacity without exceeding the row budget."""
+        assert csv_to_llm._iterative_field_parallelism(parallel=64, total_tasks=1) == 64
+        assert csv_to_llm._iterative_field_parallelism(parallel=64, total_tasks=2) == 32
+        assert csv_to_llm._iterative_field_parallelism(parallel=64, total_tasks=64) == 1
+        assert csv_to_llm._iterative_field_parallelism(parallel=64, total_tasks=750) == 1
 
     @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key'})
     def test_structured_output_invalid_field(self, sample_csv, output_csv_path, sample_pydantic_model):

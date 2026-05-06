@@ -163,7 +163,7 @@ Notes:
 - `--model` should reference an OpenAI model that supports Structured Outputs.
 - Structured outputs cannot be combined with `--embeddings`.
 - Use `--pydantic-model-column-prefix` (for example, `--pydantic-model-column-prefix llm_`) to populate every field from the Pydantic model into its own column such as `llm_category`, `llm_explanation`, etc. Nested objects are flattened into column names such as `llm_pricing_and_provisioning_cost_structure`. Lists and other compound values are serialized as JSON. The entire structured response is also stored as JSON in `--output-col`. This option is mutually exclusive with `--pydantic-model-field`.
-- Use `--pydantic-model-iterate` for large or deeply nested schemas. The tool will ask the LLM for each leaf field separately, then reassemble and validate the original Pydantic model. This increases API calls but can improve reliability for complex schemas.
+- Use `--pydantic-model-iterate` for large or deeply nested schemas. The tool will ask the LLM for each leaf field separately, then reassemble and validate the original Pydantic model. This increases API calls but can improve reliability for complex schemas. Iterative field calls share the `--parallel` budget: when there are fewer active rows than workers, unused worker capacity is used to fill fields concurrently.
 
 ### Auto Mode
 
