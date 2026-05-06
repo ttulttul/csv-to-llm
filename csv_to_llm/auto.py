@@ -16,6 +16,7 @@ from .core import (
     PROVIDER_PERPLEXITY,
     _extract_prompt_fields,
     _get_perplexity_api_key,
+    _log_cache_status,
     _openai_web_search_tools,
     _perplexity_response_format,
     _perplexity_web_search_tools,
@@ -93,6 +94,18 @@ def _auto_design_user_text(instruction: str, columns_meta: list[dict], sample_pa
     )
 
 
+def _auto_design_cache_inputs(
+    instruction: str,
+    columns_meta: list[dict],
+    sample_payload: list[dict],
+    auto_multi_column: bool,
+) -> tuple[str, str]:
+    return (
+        _auto_design_system_prompt(auto_multi_column),
+        _auto_design_user_text(instruction, columns_meta, sample_payload),
+    )
+
+
 def _run_openai_auto_design(
     instruction: str,
     columns_meta: list[dict],
@@ -103,15 +116,30 @@ def _run_openai_auto_design(
     auto_multi_column: bool,
     openai_client: Optional[OpenAI],
 ) -> AutoModelDesign:
-    output_json = _run_openai_auto_design_json_cached(
-        client=openai_client or OpenAI(),
-        instruction=instruction,
-        columns_meta=columns_meta,
-        sample_payload=sample_payload,
+    client = openai_client or OpenAI()
+    system_prompt, user_text = _auto_design_cache_inputs(
+        instruction,
+        columns_meta,
+        sample_payload,
+        auto_multi_column,
+    )
+    _log_cache_status(
+        _run_openai_auto_design_json_cached,
+        "OpenAI auto design",
+        client=client,
+        system_prompt=system_prompt,
+        user_text=user_text,
         model_name=model_name,
         temperature=temperature,
         model_websearch=model_websearch,
-        auto_multi_column=auto_multi_column,
+    )
+    output_json = _run_openai_auto_design_json_cached(
+        client=client,
+        system_prompt=system_prompt,
+        user_text=user_text,
+        model_name=model_name,
+        temperature=temperature,
+        model_websearch=model_websearch,
     )
     return AutoModelDesign.model_validate_json(output_json)
 
@@ -119,13 +147,11 @@ def _run_openai_auto_design(
 @memory.cache(ignore=["client"])
 def _run_openai_auto_design_json_cached(
     client: OpenAI,
-    instruction: str,
-    columns_meta: list[dict],
-    sample_payload: list[dict],
+    system_prompt: str,
+    user_text: str,
     model_name: str,
     temperature: float,
     model_websearch: bool,
-    auto_multi_column: bool,
 ) -> str:
     response = client.responses.parse(
         model=model_name,
@@ -133,14 +159,14 @@ def _run_openai_auto_design_json_cached(
         input=[
             {
                 "role": "system",
-                "content": _auto_design_system_prompt(auto_multi_column),
+                "content": system_prompt,
             },
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "text",
-                        "text": _auto_design_user_text(instruction, columns_meta, sample_payload),
+                        "text": user_text,
                     }
                 ],
             },
@@ -164,14 +190,28 @@ def _run_perplexity_auto_design(
     auto_multi_column: bool,
     perplexity_client: Optional[Perplexity],
 ) -> AutoModelDesign:
-    output_json = _run_perplexity_auto_design_json_cached(
-        client=perplexity_client or Perplexity(api_key=_get_perplexity_api_key()),
-        instruction=instruction,
-        columns_meta=columns_meta,
-        sample_payload=sample_payload,
+    client = perplexity_client or Perplexity(api_key=_get_perplexity_api_key())
+    system_prompt, user_text = _auto_design_cache_inputs(
+        instruction,
+        columns_meta,
+        sample_payload,
+        auto_multi_column,
+    )
+    _log_cache_status(
+        _run_perplexity_auto_design_json_cached,
+        "Perplexity auto design",
+        client=client,
+        system_prompt=system_prompt,
+        user_text=user_text,
         model_name=model_name,
         model_websearch=model_websearch,
-        auto_multi_column=auto_multi_column,
+    )
+    output_json = _run_perplexity_auto_design_json_cached(
+        client=client,
+        system_prompt=system_prompt,
+        user_text=user_text,
+        model_name=model_name,
+        model_websearch=model_websearch,
     )
     return AutoModelDesign.model_validate_json(output_json)
 
@@ -179,17 +219,15 @@ def _run_perplexity_auto_design(
 @memory.cache(ignore=["client"])
 def _run_perplexity_auto_design_json_cached(
     client: Perplexity,
-    instruction: str,
-    columns_meta: list[dict],
-    sample_payload: list[dict],
+    system_prompt: str,
+    user_text: str,
     model_name: str,
     model_websearch: bool,
-    auto_multi_column: bool,
 ) -> str:
     request_kwargs = {
         "preset": model_name,
-        "input": _auto_design_user_text(instruction, columns_meta, sample_payload),
-        "instructions": _auto_design_system_prompt(auto_multi_column),
+        "input": user_text,
+        "instructions": system_prompt,
         "response_format": _perplexity_response_format(AutoModelDesign, AutoModelDesign.__name__),
     }
     tools = _perplexity_web_search_tools(model_websearch)

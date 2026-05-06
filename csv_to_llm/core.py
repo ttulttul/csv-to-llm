@@ -83,6 +83,19 @@ def _response_schema_name(raw_name: str) -> str:
     return f"{cleaned[:52]}{digest}"[:64]
 
 
+def _log_cache_status(cached_function: Callable[..., Any], label: str, *args: Any, **kwargs: Any) -> None:
+    """Log whether a joblib cached function call is expected to hit."""
+
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    try:
+        hit = cached_function.check_call_in_cache(*args, **kwargs)
+    except Exception as exc:
+        logger.info("%s cache status unavailable: %s", label, exc)
+        return
+    logger.info("%s cache %s", label, "hit" if hit else "miss")
+
+
 def _extract_prompt_fields(prompt_template: str, valid_fields: Optional[set[str]] = None) -> List[str]:
     """Extract format fields while ignoring escaped literal braces."""
 
@@ -462,6 +475,19 @@ def call_openai_structured(prompt_value: str, structured_config: StructuredOutpu
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
     client = openai_client or OpenAI()
+    _log_cache_status(
+        _call_openai_structured_json_cached,
+        "OpenAI structured",
+        client=client,
+        prompt_value=prompt_value,
+        model_reference=structured_config.model_reference,
+        class_name=structured_config.class_name,
+        llm_model=structured_config.llm_model,
+        max_output_tokens=structured_config.max_output_tokens,
+        temperature=structured_config.temperature,
+        system_prompt=structured_config.system_prompt,
+        model_websearch=structured_config.model_websearch,
+    )
     output_json = _call_openai_structured_json_cached(
         client=client,
         prompt_value=prompt_value,
@@ -554,6 +580,18 @@ def call_perplexity_structured(
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
     client = perplexity_client or Perplexity(api_key=_get_perplexity_api_key())
+    _log_cache_status(
+        _call_perplexity_structured_json_cached,
+        "Perplexity structured",
+        client=client,
+        prompt_value=prompt_value,
+        model_reference=structured_config.model_reference,
+        class_name=structured_config.class_name,
+        llm_model=structured_config.llm_model,
+        max_output_tokens=structured_config.max_output_tokens,
+        system_prompt=structured_config.system_prompt,
+        model_websearch=structured_config.model_websearch,
+    )
     output_json = _call_perplexity_structured_json_cached(
         client=client,
         prompt_value=prompt_value,
@@ -811,6 +849,20 @@ def call_openai_structured_iterative(
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
     client = openai_client or OpenAI()
+    _log_cache_status(
+        _call_openai_structured_iterative_json_cached,
+        "OpenAI iterative structured",
+        client=client,
+        prompt_value=prompt_value,
+        model_reference=structured_config.model_reference,
+        class_name=structured_config.class_name,
+        llm_model=structured_config.llm_model,
+        max_output_tokens=structured_config.max_output_tokens,
+        temperature=structured_config.temperature,
+        system_prompt=structured_config.system_prompt,
+        model_websearch=structured_config.model_websearch,
+        iterate_parallelism=structured_config.iterate_parallelism,
+    )
     output_json = _call_openai_structured_iterative_json_cached(
         client=client,
         prompt_value=prompt_value,
