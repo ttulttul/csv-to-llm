@@ -505,7 +505,7 @@ def call_openai_structured(prompt_value: str, structured_config: StructuredOutpu
 def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) -> Dict[str, Any]:
     """Build a Perplexity JSON Schema response format for a Pydantic model."""
 
-    schema = model_cls.model_json_schema()
+    schema = _sanitize_perplexity_json_schema(model_cls.model_json_schema())
     schema["required"] = list(model_cls.model_fields.keys())
     schema["additionalProperties"] = False
     return {
@@ -515,6 +515,20 @@ def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) ->
             "schema": schema,
         },
     }
+
+
+def _sanitize_perplexity_json_schema(value: Any) -> Any:
+    """Remove JSON Schema annotations unsupported by Perplexity response_format."""
+
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_perplexity_json_schema(nested_value)
+            for key, nested_value in value.items()
+            if key != "format"
+        }
+    if isinstance(value, list):
+        return [_sanitize_perplexity_json_schema(item) for item in value]
+    return value
 
 
 def _call_perplexity_structured_json(

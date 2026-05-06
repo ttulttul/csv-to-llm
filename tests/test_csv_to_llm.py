@@ -9,7 +9,7 @@ import sys
 import json
 from dataclasses import replace
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 # Import the module under test
 from csv_to_llm import core as csv_to_llm
@@ -768,6 +768,18 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert kwargs["response_format"]["json_schema"]["name"] == "EmailCategory"
         assert kwargs["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
         assert kwargs["response_format"]["json_schema"]["schema"]["required"] == ["category", "explanation"]
+
+    def test_perplexity_response_format_strips_unsupported_schema_formats(self):
+        """Perplexity rejects Pydantic URL format annotations such as format=uri."""
+
+        class ProviderHomepage(BaseModel):
+            homepage_url: HttpUrl | None
+
+        response_format = csv_to_llm._perplexity_response_format(ProviderHomepage, "ProviderHomepage")
+        schema_text = json.dumps(response_format["json_schema"]["schema"])
+
+        assert '"format"' not in schema_text
+        assert "homepage_url" in response_format["json_schema"]["schema"]["properties"]
 
     def test_perplexity_structured_output_uses_cache(self, sample_pydantic_model):
         """Repeated Perplexity structured calls should reuse the joblib cache."""
