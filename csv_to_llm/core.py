@@ -16,6 +16,7 @@ import types
 from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
+from string import Formatter
 from typing import Optional, Type, Tuple, List, Callable, Dict, Any, Iterable, get_args, get_origin, Union
 from joblib import Memory
 from tqdm import tqdm
@@ -80,6 +81,19 @@ def _response_schema_name(raw_name: str) -> str:
         return cleaned
     digest = hashlib.sha1(raw_name.encode("utf-8")).hexdigest()[:12]
     return f"{cleaned[:52]}{digest}"[:64]
+
+
+def _extract_prompt_fields(prompt_template: str) -> List[str]:
+    """Extract format fields while ignoring escaped literal braces."""
+
+    fields = []
+    for _, field_name, _, _ in Formatter().parse(prompt_template):
+        if field_name is None:
+            continue
+        field_name = field_name.split("!", 1)[0].split(":", 1)[0]
+        if field_name:
+            fields.append(field_name)
+    return fields
 
 
 @dataclass(frozen=True)
@@ -1084,7 +1098,7 @@ def process_csv_with_claude(
         return
 
     # Extract required placeholders from the prompt template
-    required_columns = re.findall(r'\{([^}]+)\}', prompt_template)
+    required_columns = _extract_prompt_fields(prompt_template)
     if not required_columns:
         raise ValueError(
             "Prompt template must contain at least one column identifier enclosed in curly braces, "
@@ -1427,7 +1441,7 @@ def process_csv_with_embeddings(
         print(f"{Fore.RED}✗{Style.RESET_ALL} Error loading CSV: {e}")
         return
 
-    required_columns = re.findall(r"\{([^}]+)\}", prompt_template)
+    required_columns = _extract_prompt_fields(prompt_template)
     if not required_columns:
         raise ValueError("Prompt template requires at least one {column} placeholder.")
 

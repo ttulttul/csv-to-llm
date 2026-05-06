@@ -14,6 +14,7 @@ from .core import (
     DEFAULT_PERPLEXITY_STRUCTURED_PRESET,
     PROVIDER_OPENAI,
     PROVIDER_PERPLEXITY,
+    _extract_prompt_fields,
     _get_perplexity_api_key,
     _openai_web_search_tools,
     _perplexity_response_format,
@@ -148,6 +149,45 @@ def _run_perplexity_auto_design(
     return AutoModelDesign.model_validate_json(output_text)
 
 
+def _escape_non_column_braces(prompt_template: str, valid_fields: set[str]) -> str:
+    """Escape generated literal braces while preserving CSV column placeholders."""
+
+    result = []
+    i = 0
+    while i < len(prompt_template):
+        char = prompt_template[i]
+        if char == "{":
+            if i + 1 < len(prompt_template) and prompt_template[i + 1] == "{":
+                result.append("{{")
+                i += 2
+                continue
+            end = prompt_template.find("}", i + 1)
+            if end == -1:
+                result.append("{{")
+                i += 1
+                continue
+            field_name = prompt_template[i + 1:end]
+            if field_name in valid_fields:
+                result.append(prompt_template[i:end + 1])
+            else:
+                result.append("{{")
+                result.append(field_name)
+                result.append("}}")
+            i = end + 1
+            continue
+        if char == "}":
+            if i + 1 < len(prompt_template) and prompt_template[i + 1] == "}":
+                result.append("}}")
+                i += 2
+                continue
+            result.append("}}")
+            i += 1
+            continue
+        result.append(char)
+        i += 1
+    return "".join(result)
+
+
 def run_auto_mode(
     instruction: str,
     input_csv_path: str,
@@ -214,8 +254,8 @@ def run_auto_mode(
         (design.primary_field or "auto_output"), "auto_output"
     )
 
-    prompt_template = design.prompt_template.strip()
-    placeholders = re.findall(r"\{([^}]+)\}", prompt_template)
+    prompt_template = _escape_non_column_braces(design.prompt_template.strip(), set(df.columns))
+    placeholders = _extract_prompt_fields(prompt_template)
     missing = [ph for ph in placeholders if ph not in df.columns]
     if missing:
         raise ValueError(

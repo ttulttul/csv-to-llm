@@ -1226,6 +1226,42 @@ class TestAutoMode:
 
         mock_perplexity.assert_called_once_with(api_key="test_perplexity_key")
 
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_escapes_literal_json_braces_in_prompt(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"Provider Name": ["Shopify"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="HostingClassification",
+            python_code="from pydantic import BaseModel\n\nclass HostingClassification(BaseModel):\n    is_traditional_web_hosting: bool\n",
+            primary_field="is_traditional_web_hosting",
+            prompt_template=(
+                "Classify {Provider Name}. Respond as JSON: {\n"
+                '  "is_traditional_web_hosting": true or false,\n'
+                '  "label": "Traditional Web Hosting" or "Not Traditional Web Hosting",\n'
+                '  "reason_short": "very brief explanation"\n'
+                "}"
+            ),
+            output_column_name="hosting_classification",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="Is this company a traditional web hosting provider?",
+            input_csv_path=csv_path,
+            sample_size=1,
+            model="gpt-test",
+            openai_client=None,
+        )
+
+        formatted = plan.prompt_template.format(**{"Provider Name": "Shopify"})
+        assert "Classify Shopify" in formatted
+        assert '"is_traditional_web_hosting": true or false' in formatted
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
