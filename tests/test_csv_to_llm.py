@@ -602,6 +602,20 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert any("first_name (of type str) of this User Profile" in prompt for prompt in prompts)
         assert any("theme (of type str) of this User AccountSettings" in prompt for prompt in prompts)
 
+    def test_iterative_field_model_name_respects_openai_limit(self):
+        """Temporary per-field schema names must fit OpenAI's 64-character limit."""
+        model_name = csv_to_llm._iterative_field_model_name(
+            owner_names=[
+                "EmailDeliveryService",
+                "PricingAndProvisioningConfiguration",
+                "DeeplyNestedAddonMetadata",
+            ],
+            field_name="requires_standalone_addon_subscription_before_provisioning",
+        )
+
+        assert len(model_name) <= 64
+        assert model_name.startswith("CsvToLlm")
+
     @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key'})
     def test_structured_output_invalid_field(self, sample_csv, output_csv_path, sample_pydantic_model):
         """Invalid field names should raise before any API call is made."""

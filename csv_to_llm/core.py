@@ -346,6 +346,20 @@ def _build_iterative_field_prompt(
     )
 
 
+def _iterative_field_model_name(owner_names: List[str], field_name: str) -> str:
+    """Build an OpenAI-compatible temporary model name for one field schema."""
+
+    readable_name = "CsvToLlm" + "".join(part.title().replace("_", "") for part in owner_names + [field_name])
+    if len(readable_name) <= 64:
+        return readable_name
+
+    digest_source = ".".join(owner_names + [field_name])
+    digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:12]
+    suffix = field_name.title().replace("_", "")[:32]
+    compact_name = f"CsvToLlm{suffix}{digest}"
+    return compact_name[:64]
+
+
 def _call_openai_structured_field(
     prompt_value: str,
     structured_config: StructuredOutputConfig,
@@ -356,7 +370,7 @@ def _call_openai_structured_field(
 ) -> Any:
     """Call OpenAI for a single leaf field using a temporary one-field model."""
 
-    field_model_name = "CsvToLlm" + "".join(part.title().replace("_", "") for part in owner_names + [field_name])
+    field_model_name = _iterative_field_model_name(owner_names, field_name)
     field_model = create_model(field_model_name, **{field_name: (field_annotation, ...)})
     field_prompt = _build_iterative_field_prompt(
         base_prompt=prompt_value,
