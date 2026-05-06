@@ -206,8 +206,8 @@ class TestProcessSingleRow(TestCsvToLlm):
         assert response is None
         assert "ANTHROPIC_API_KEY not found" in error
     
-    def test_process_single_row_missing_data(self):
-        """Test handling of missing data in row."""
+    def test_process_single_row_blank_data_renders_empty_string(self):
+        """Blank cells in prompt columns should not fail the row."""
         row_data = {'name': 'Alice', 'description': None}
         args_tuple = RowProcessingArgs(
             index=0,
@@ -226,12 +226,15 @@ class TestProcessSingleRow(TestCsvToLlm):
         
         with patch('csv_to_llm.core.load_dotenv'), \
              patch('os.getenv', return_value="test_key"), \
-             patch('anthropic.Anthropic'):
+             patch('anthropic.Anthropic'), \
+             patch('csv_to_llm.core.call_claude_api_cached') as mock_api:
+            mock_api.return_value = "Test response"
             index, response, error = csv_to_llm.process_single_row(args_tuple)
             
             assert index == 0
-            assert response is None
-            assert "Missing data for prompt template" in error
+            assert response["output_value"] == "Test response"
+            assert error is None
+            assert mock_api.call_args.kwargs["prompt_value"] == "Alice: "
     
     def test_process_single_row_formatting_error(self):
         """Test handling of template formatting errors."""
@@ -260,8 +263,7 @@ class TestProcessSingleRow(TestCsvToLlm):
             
             assert index == 0
             assert response is None
-            # The function checks for missing data first, so we need a different test case
-            assert "Missing data for prompt template" in error
+            assert "Formatting error" in error
 
     @patch('csv_to_llm.core.load_dotenv')
     @patch('os.getenv', return_value="test_key")

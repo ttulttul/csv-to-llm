@@ -153,7 +153,7 @@ def _render_prompt_template(prompt_template: str, values: Dict[str, Any], requir
         matched_placeholder = False
         for token, field in placeholder_tokens:
             if prompt_template.startswith(token, i):
-                result.append(str(values[field]))
+                result.append(_stringify_prompt_value(values[field]))
                 i += len(token)
                 matched_placeholder = True
                 break
@@ -163,6 +163,22 @@ def _render_prompt_template(prompt_template: str, values: Dict[str, Any], requir
         result.append(prompt_template[i])
         i += 1
     return "".join(result)
+
+
+def _stringify_prompt_value(value: Any) -> str:
+    """Convert a CSV cell value to prompt text, treating blank cells as empty."""
+
+    is_missing = False
+    try:
+        missing_check = pd.isna(value)
+        if isinstance(missing_check, bool):
+            is_missing = missing_check
+    except (TypeError, ValueError):
+        is_missing = False
+
+    if is_missing:
+        return ""
+    return str(value)
 
 
 @dataclass(frozen=True)
@@ -970,11 +986,8 @@ def process_single_row(task: RowProcessingArgs):
     except RuntimeError as exc:
         return task.index, None, str(exc)
 
-    format_dict = {col: task.row_data.get(col) for col in task.required_columns}
-    if any(pd.isna(format_dict.get(col)) for col in task.required_columns):
-        return task.index, None, "Missing data for prompt template"
-
     try:
+        format_dict = {col: task.row_data[col] for col in task.required_columns}
         prompt_value = _render_prompt_template(task.prompt_template, format_dict, task.required_columns)
     except KeyError as e:
         return task.index, None, f"Formatting error (likely missing column in template): {e}"
@@ -1391,13 +1404,8 @@ def process_csv_with_claude(
         with tqdm(total=total_tasks, desc="Processing rows", unit="row", 
                  bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]") as pbar:
             for task in task_iterator:
-                format_dict = {col: task.row_data.get(col) for col in task.required_columns}
-                if any(pd.isna(val) for val in format_dict.values()):
-                    tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {task.index+1} (missing data for prompt template)")
-                    pbar.update(1)
-                    continue
-
                 try:
+                    format_dict = {col: task.row_data[col] for col in task.required_columns}
                     prompt_value = _render_prompt_template(task.prompt_template, format_dict, task.required_columns)
                 except KeyError as e:
                     tqdm.write(f"{Fore.YELLOW}⏭️{Style.RESET_ALL} Skipping row {task.index+1} due to formatting error: {e}")
