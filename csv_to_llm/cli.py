@@ -110,14 +110,31 @@ def main():
         if args.pydantic_model or args.pydantic_model_class or args.pydantic_model_field or args.pydantic_model_column_prefix or args.pydantic_model_iterate:
             parser.error("--auto cannot be combined with manual Pydantic arguments")
 
+        auto_provider = args.provider or PROVIDER_OPENAI
+        if auto_provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
+            parser.error("--auto currently requires --provider openai or --provider perplexity")
+        if args.model_websearch and auto_provider != PROVIDER_OPENAI:
+            parser.error("--model-websearch currently requires --provider openai")
+        auto_model = args.model
+        if auto_model is None:
+            auto_model = (
+                DEFAULT_PERPLEXITY_STRUCTURED_PRESET
+                if auto_provider == PROVIDER_PERPLEXITY
+                else DEFAULT_OPENAI_MODEL
+            )
+
         auto_plan = run_auto_mode(
             instruction=auto_instruction,
             input_csv_path=args.input,
             sample_size=auto_sample_size,
-            model=args.model,
+            provider=auto_provider,
+            model=auto_model,
             temperature=args.temperature,
+            model_websearch=args.model_websearch,
             output_column=args.output_col,
         )
+        args.provider = auto_provider
+        args.model = auto_model
         prompt_template_value = auto_plan.prompt_template
         args.pydantic_model = auto_plan.pydantic_model_path
         args.pydantic_model_class = auto_plan.pydantic_model_class

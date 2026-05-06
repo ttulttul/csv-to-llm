@@ -6,9 +6,17 @@ from typing import Optional
 
 import pandas as pd
 from openai import OpenAI
+from perplexity import Perplexity
 from pydantic import BaseModel, Field
 
-from .core import DEFAULT_OPENAI_MODEL
+from .core import (
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_PERPLEXITY_STRUCTURED_PRESET,
+    PROVIDER_OPENAI,
+    PROVIDER_PERPLEXITY,
+    _openai_web_search_tools,
+    _perplexity_response_format,
+)
 
 
 class AutoModelDesign(BaseModel):
@@ -58,23 +66,98 @@ def _ensure_python_file(code: str, class_name: str, directory: str) -> str:
     return file_path
 
 
+def _auto_design_system_prompt() -> str:
+    return (
+        "You design Pydantic BaseModel schemas for CSV data. "
+        "Given column metadata and sample rows, produce Python code for a Pydantic BaseModel. "
+        "Also provide a prompt template that references CSV columns via {column_name}."
+    )
+
+
+def _auto_design_user_text(instruction: str, columns_meta: list[dict], sample_payload: list[dict]) -> str:
+    return "Task description: {task}\n\nColumns:\n{cols}\n\nSample rows:\n{rows}".format(
+        task=instruction,
+        cols=json.dumps(columns_meta, indent=2),
+        rows=json.dumps(sample_payload, indent=2),
+    )
+
+
+def _run_openai_auto_design(
+    instruction: str,
+    columns_meta: list[dict],
+    sample_payload: list[dict],
+    model_name: str,
+    temperature: float,
+    model_websearch: bool,
+    openai_client: Optional[OpenAI],
+) -> AutoModelDesign:
+    client = openai_client or OpenAI()
+    response = client.responses.parse(
+        model=model_name,
+        temperature=temperature,
+        input=[
+            {
+                "role": "system",
+                "content": _auto_design_system_prompt(),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": _auto_design_user_text(instruction, columns_meta, sample_payload),
+                    }
+                ],
+            },
+        ],
+        text_format=AutoModelDesign,
+        tools=_openai_web_search_tools(model_websearch),
+    )
+
+    design = response.output_parsed
+    if design is None:
+        raise RuntimeError("Auto design response parsing failed")
+    return design
+
+
+def _run_perplexity_auto_design(
+    instruction: str,
+    columns_meta: list[dict],
+    sample_payload: list[dict],
+    model_name: str,
+    perplexity_client: Optional[Perplexity],
+) -> AutoModelDesign:
+    client = perplexity_client or Perplexity()
+    response = client.responses.create(
+        preset=model_name,
+        input=_auto_design_user_text(instruction, columns_meta, sample_payload),
+        instructions=_auto_design_system_prompt(),
+        response_format=_perplexity_response_format(AutoModelDesign, AutoModelDesign.__name__),
+    )
+
+    output_text = getattr(response, "output_text", None)
+    if not output_text:
+        raise RuntimeError("Perplexity auto design failed: no output_text returned")
+    return AutoModelDesign.model_validate_json(output_text)
+
+
 def run_auto_mode(
     instruction: str,
     input_csv_path: str,
     sample_size: int,
+    provider: str = PROVIDER_OPENAI,
     model: Optional[str] = None,
     temperature: float = 0,
+    model_websearch: bool = False,
     output_column: Optional[str] = None,
     openai_client: Optional[OpenAI] = None,
+    perplexity_client: Optional[Perplexity] = None,
 ) -> AutoPlan:
     """Generate a Pydantic model + prompt using a single instruction."""
 
     df = pd.read_csv(input_csv_path)
     if df.empty:
         raise ValueError("Input CSV is empty; cannot run --auto")
-
-    model_name = model or DEFAULT_OPENAI_MODEL
-    client = openai_client or OpenAI()
 
     sample_size = max(1, min(sample_size, len(df)))
     sample_df = df.head(sample_size)
@@ -85,46 +168,28 @@ def run_auto_mode(
         for col in df.columns
     ]
 
-    task_payload = {
-        "user_instruction": instruction,
-        "columns": columns_meta,
-        "sample_rows": sample_payload,
-    }
-
-    response = client.responses.parse(
-        model=model_name,
-        temperature=temperature,
-        input=[
-            {
-                "role": "system",
-                "content": (
-                    "You design Pydantic BaseModel schemas for CSV data. "
-                    "Given column metadata and sample rows, produce Python code for a Pydantic BaseModel. "
-                    "Also provide a prompt template that references CSV columns via {column_name}."
-                ),
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": (
-                            "Task description: {task}\n\nColumns:\n{cols}\n\nSample rows:\n{rows}".format(
-                                task=instruction,
-                                cols=json.dumps(columns_meta, indent=2),
-                                rows=json.dumps(sample_payload, indent=2),
-                            )
-                        ),
-                    }
-                ],
-            },
-        ],
-        text_format=AutoModelDesign,
-    )
-
-    design = response.output_parsed
-    if design is None:
-        raise RuntimeError("Auto design response parsing failed")
+    if provider == PROVIDER_OPENAI:
+        model_name = model or DEFAULT_OPENAI_MODEL
+        design = _run_openai_auto_design(
+            instruction=instruction,
+            columns_meta=columns_meta,
+            sample_payload=sample_payload,
+            model_name=model_name,
+            temperature=temperature,
+            model_websearch=model_websearch,
+            openai_client=openai_client,
+        )
+    elif provider == PROVIDER_PERPLEXITY:
+        model_name = model or DEFAULT_PERPLEXITY_STRUCTURED_PRESET
+        design = _run_perplexity_auto_design(
+            instruction=instruction,
+            columns_meta=columns_meta,
+            sample_payload=sample_payload,
+            model_name=model_name,
+            perplexity_client=perplexity_client,
+        )
+    else:
+        raise ValueError("--auto currently requires --provider openai or --provider perplexity")
 
     class_name = design.model_name or "AutoSchema"
     python_code = design.python_code.strip()

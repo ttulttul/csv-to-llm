@@ -1119,6 +1119,7 @@ class TestAutoMode:
             sample_size=2,
             model="gpt-test",
             temperature=0,
+            model_websearch=True,
             output_column=None,
             openai_client=None,
         )
@@ -1127,6 +1128,44 @@ class TestAutoMode:
         assert os.path.exists(plan.pydantic_model_path)
         assert plan.primary_field == "category"
         assert plan.output_column == "llm_category"
+        parse_kwargs = mock_client.responses.parse.call_args.kwargs
+        assert parse_kwargs["model"] == "gpt-test"
+        assert parse_kwargs["tools"] == [{"type": "web_search"}]
+
+    def test_run_auto_mode_perplexity_generates_files(self, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"subject": ["Hello", "World"], "body": ["a", "b"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="EmailCategory",
+            python_code="from pydantic import BaseModel\n\nclass EmailCategory(BaseModel):\n    category: str\n",
+            primary_field="category",
+            prompt_template="Classify this subject: {subject}",
+            output_column_name="llm_category",
+        )
+        mock_response.output_text = design.model_dump_json()
+        mock_client.responses.create.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="Categorize",
+            input_csv_path=csv_path,
+            sample_size=2,
+            provider="perplexity",
+            model="pro-search",
+            output_column=None,
+            perplexity_client=mock_client,
+        )
+
+        assert plan.prompt_template == design.prompt_template
+        assert os.path.exists(plan.pydantic_model_path)
+        assert plan.primary_field == "category"
+        assert plan.output_column == "llm_category"
+        create_kwargs = mock_client.responses.create.call_args.kwargs
+        assert create_kwargs["preset"] == "pro-search"
+        assert create_kwargs["response_format"]["type"] == "json_schema"
+        assert create_kwargs["response_format"]["json_schema"]["name"] == "AutoModelDesign"
 
 
 if __name__ == "__main__":

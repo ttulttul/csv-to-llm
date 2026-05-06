@@ -180,7 +180,9 @@ csv-to-llm \
 Options:
 
 - `--auto-sample-size`: Number of rows (default 5) included in the schema-design request.
-- Auto mode always uses OpenAI structured outputs, so `OPENAI_API_KEY` must be set. Any manual prompt or Pydantic arguments are ignored/forbidden in this mode.
+- Auto mode supports `--provider openai` and `--provider perplexity`. With no provider, it defaults to OpenAI for backward compatibility.
+- With `--provider perplexity`, schema design and structured extraction use the Perplexity Responses API preset from `--model`, defaulting to `pro-search`.
+- `--model-websearch` is available only with OpenAI auto mode. Any manual prompt or Pydantic arguments are ignored/forbidden in auto mode.
 
 ## Command Line Options
 

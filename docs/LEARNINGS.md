@@ -9,3 +9,4 @@
 - 2026-05-05: Iterative field extraction should consume spare `--parallel` capacity without multiplying row workers by field workers into unbounded API concurrency.
 - 2026-05-05: OpenAI Responses web search is opt-in via `tools=[{"type": "web_search"}]` and should only be enabled for OpenAI provider calls.
 - 2026-05-05: Perplexity structured output uses the official `perplexityai` SDK, `responses.create`, and JSON Schema `response_format`, then validates `response.output_text` through the requested Pydantic model.
+- 2026-05-05: Auto mode needs provider-aware schema design because Perplexity structured extraction expects a Perplexity-generated compatible Pydantic schema and preset model before the normal row-processing pipeline starts.
