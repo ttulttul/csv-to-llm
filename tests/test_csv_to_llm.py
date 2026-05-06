@@ -1533,6 +1533,36 @@ class TestCliAutoMode(TestCsvToLlm):
         assert mock_auto.call_args.kwargs["auto_multi_column"] is True
         assert mock_process.call_args.kwargs["pydantic_model_column_prefix"] == "auto_"
 
+    def test_cli_auto_multi_column_forces_flattening_even_with_primary_field(self, temp_dir):
+        input_path = os.path.join(temp_dir, "input.csv")
+        output_path = os.path.join(temp_dir, "output.csv")
+        model_path = os.path.join(temp_dir, "auto_model.py")
+        pd.DataFrame({"subject": ["Hello"]}).to_csv(input_path, index=False)
+
+        auto_plan = AutoPlan(
+            prompt_template="Classify {subject}",
+            pydantic_model_path=model_path,
+            pydantic_model_class="AutoModel",
+            primary_field="category",
+            output_column="category",
+        )
+
+        argv = [
+            "csv-to-llm",
+            "--input", input_path,
+            "--output", output_path,
+            "--auto", "Classify multiple things",
+            "--auto-multi-column",
+        ]
+        with patch.object(sys, "argv", argv), \
+             patch("csv_to_llm.cli.run_auto_mode", return_value=auto_plan), \
+             patch("csv_to_llm.cli.process_csv_with_claude") as mock_process:
+            csv_to_llm_cli.main()
+
+        process_kwargs = mock_process.call_args.kwargs
+        assert process_kwargs["pydantic_model_field"] is None
+        assert process_kwargs["pydantic_model_column_prefix"] == "auto_"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

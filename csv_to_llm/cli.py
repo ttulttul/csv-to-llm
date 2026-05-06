@@ -142,8 +142,8 @@ def main():
         prompt_template_value = auto_plan.prompt_template
         args.pydantic_model = auto_plan.pydantic_model_path
         args.pydantic_model_class = auto_plan.pydantic_model_class
-        args.pydantic_model_field = auto_plan.primary_field
-        if auto_plan.primary_field is None and not args.pydantic_model_column_prefix:
+        args.pydantic_model_field = None if args.auto_multi_column else auto_plan.primary_field
+        if (args.auto_multi_column or auto_plan.primary_field is None) and not args.pydantic_model_column_prefix:
             args.pydantic_model_column_prefix = "auto_"
         args.output_col = args.output_col or auto_plan.output_column
         print(
