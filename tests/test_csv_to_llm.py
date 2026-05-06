@@ -1262,6 +1262,35 @@ class TestAutoMode:
         assert "Classify Shopify" in formatted
         assert '"is_traditional_web_hosting": true or false' in formatted
 
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_escapes_nested_unknown_placeholder_in_json_example(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"Provider Name": ["Shopify"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="HostingClassification",
+            python_code="from pydantic import BaseModel\n\nclass HostingClassification(BaseModel):\n    fit: str\n",
+            primary_field="fit",
+            prompt_template='Classify {Provider Name}. Return JSON: {"label": "{Fit}"}',
+            output_column_name="hosting_classification",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="Is this company a traditional web hosting provider?",
+            input_csv_path=csv_path,
+            sample_size=1,
+            model="gpt-test",
+            openai_client=None,
+        )
+
+        formatted = plan.prompt_template.format(**{"Provider Name": "Shopify"})
+        assert formatted == 'Classify Shopify. Return JSON: {"label": "{Fit}"}'
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

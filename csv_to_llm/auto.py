@@ -153,37 +153,30 @@ def _escape_non_column_braces(prompt_template: str, valid_fields: set[str]) -> s
     """Escape generated literal braces while preserving CSV column placeholders."""
 
     result = []
+    placeholder_tokens = sorted(
+        ((f"{{{field}}}", field) for field in valid_fields),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
     i = 0
     while i < len(prompt_template):
+        matched_placeholder = False
+        for token, _ in placeholder_tokens:
+            if prompt_template.startswith(token, i):
+                result.append(token)
+                i += len(token)
+                matched_placeholder = True
+                break
+        if matched_placeholder:
+            continue
+
         char = prompt_template[i]
         if char == "{":
-            if i + 1 < len(prompt_template) and prompt_template[i + 1] == "{":
-                result.append("{{")
-                i += 2
-                continue
-            end = prompt_template.find("}", i + 1)
-            if end == -1:
-                result.append("{{")
-                i += 1
-                continue
-            field_name = prompt_template[i + 1:end]
-            if field_name in valid_fields:
-                result.append(prompt_template[i:end + 1])
-            else:
-                result.append("{{")
-                result.append(field_name)
-                result.append("}}")
-            i = end + 1
-            continue
-        if char == "}":
-            if i + 1 < len(prompt_template) and prompt_template[i + 1] == "}":
-                result.append("}}")
-                i += 2
-                continue
+            result.append("{{")
+        elif char == "}":
             result.append("}}")
-            i += 1
-            continue
-        result.append(char)
+        else:
+            result.append(char)
         i += 1
     return "".join(result)
 
