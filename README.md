@@ -65,7 +65,7 @@ csv-to-llm \
   --system "You are a professional translator"
 ```
 
-By default the tool targets Anthropic's **claude-sonnet-4-20250514** model. Use `--provider openai` for OpenAI's Responses API or `--provider perplexity` for Perplexity Sonar. When you enable structured outputs via `--pydantic-model`, the default automatically switches to OpenAI's **gpt-5.2** (you can still override `--model` explicitly at any time).
+By default the tool targets Anthropic's **claude-sonnet-4-20250514** model. Use `--provider openai` for OpenAI's Responses API or `--provider perplexity` for Perplexity Sonar. When you enable structured outputs via `--pydantic-model`, the default automatically switches to OpenAI's **gpt-5.4-mini**, or Perplexity's **pro-search** preset when `--provider perplexity` is set (you can still override `--model` explicitly at any time).
 
 ```bash
 csv-to-llm \
@@ -123,7 +123,7 @@ csv-to-llm \
 
 ### Structured Outputs with Pydantic
 
-Provide a Pydantic model file (or module) and tell the CLI which field to copy into the output column. The request will be routed through OpenAI's Structured Outputs API and validated against the schema.
+Provide a Pydantic model file (or module) and tell the CLI which field to copy into the output column. The request will be routed through OpenAI's Structured Outputs API or Perplexity's JSON Schema structured output API and validated against the schema.
 
 The `examples/` directory includes two ready-to-use email classification schemas:
 
@@ -161,9 +161,10 @@ Notes:
 
 - `--pydantic-model-field` is required and must exist on the BaseModel class.
 - `--model` should reference an OpenAI model that supports Structured Outputs.
+- With `--provider perplexity`, `--model` is treated as the Perplexity Responses preset for structured outputs, defaulting to `pro-search`.
 - Structured outputs cannot be combined with `--embeddings`.
 - Use `--pydantic-model-column-prefix` (for example, `--pydantic-model-column-prefix llm_`) to populate every field from the Pydantic model into its own column such as `llm_category`, `llm_explanation`, etc. Nested objects are flattened into column names such as `llm_pricing_and_provisioning_cost_structure`. Lists and other compound values are serialized as JSON. The entire structured response is also stored as JSON in `--output-col`. This option is mutually exclusive with `--pydantic-model-field`.
-- Use `--pydantic-model-iterate` for large or deeply nested schemas. The tool will ask the LLM for each leaf field separately, then reassemble and validate the original Pydantic model. This increases API calls but can improve reliability for complex schemas. Iterative field calls share the `--parallel` budget: when there are fewer active rows than workers, unused worker capacity is used to fill fields concurrently.
+- Use `--pydantic-model-iterate` for large or deeply nested schemas with OpenAI. The tool will ask the LLM for each leaf field separately, then reassemble and validate the original Pydantic model. This increases API calls but can improve reliability for complex schemas. Iterative field calls share the `--parallel` budget: when there are fewer active rows than workers, unused worker capacity is used to fill fields concurrently.
 
 ### Auto Mode
 
@@ -190,7 +191,7 @@ Options:
 - `--output-col`: Column name to store LLM responses (required)
 - `--system`: System prompt for the selected LLM (default: "You are a helpful assistant.")
 - `--provider`: LLM provider (`anthropic`, `openai`, or `perplexity`; default: `anthropic`)
-- `--model`: Model to use (defaults to `claude-sonnet-4-20250514`, `gpt-5.2`, or `sonar-pro` depending on provider)
+- `--model`: Model or preset to use (defaults to `claude-sonnet-4-20250514`, `gpt-5.4-mini`, or `sonar-pro` depending on provider; Perplexity structured outputs default to `pro-search`)
 - `--model-websearch`: Enable OpenAI Responses web search via `tools=[{"type": "web_search"}]` for model calls
 - `--max-tokens`: Maximum tokens for response (default: 1000)
 - `--temperature`: Temperature setting (default: 1.0)
@@ -206,7 +207,7 @@ Options:
 - `--pydantic-model-class`: BaseModel class name when multiple models are defined in the same module
 - `--pydantic-model-field`: Field on the BaseModel whose value is stored in `--output-col` (required unless `--pydantic-model-column-prefix` is provided)
 - `--pydantic-model-column-prefix`: When set, populate additional columns for every BaseModel field using the provided prefix, and store the entire structured response (as JSON) in `--output-col`; mutually exclusive with `--pydantic-model-field`
-- `--pydantic-model-iterate`: Fill structured output leaf fields one at a time, recursing into nested BaseModel fields before validating the full model
+- `--pydantic-model-iterate`: Fill structured output leaf fields one at a time with OpenAI, recursing into nested BaseModel fields before validating the full model
 - `--auto`: One-shot instruction to auto-generate a Pydantic model, prompt template, and output column
 - `--auto-sample-size`: Number of rows to include when designing the auto schema (default: 5)
 

@@ -7,6 +7,7 @@ from .core import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
     DEFAULT_PERPLEXITY_MODEL,
+    DEFAULT_PERPLEXITY_STRUCTURED_PRESET,
     DEFAULT_PROVIDER,
     SUPPORTED_LLM_PROVIDERS,
     PROVIDER_OPENAI,
@@ -151,9 +152,6 @@ def main():
     if args.pydantic_model and args.embeddings:
         parser.error("--pydantic-model cannot be used together with --embeddings")
 
-    if args.pydantic_model and args.provider and args.provider != PROVIDER_OPENAI:
-        parser.error("--pydantic-model currently requires --provider openai")
-
     if args.pydantic_model_column_prefix and not args.pydantic_model:
         parser.error("--pydantic-model-column-prefix requires --pydantic-model")
 
@@ -178,9 +176,18 @@ def main():
     if args.model_websearch and resolved_provider != PROVIDER_OPENAI:
         parser.error("--model-websearch currently requires --provider openai")
 
+    if args.pydantic_model and resolved_provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
+        parser.error("--pydantic-model currently requires --provider openai or --provider perplexity")
+
+    if args.pydantic_model_iterate and resolved_provider != PROVIDER_OPENAI:
+        parser.error("--pydantic-model-iterate currently requires --provider openai")
+
     resolved_model = args.model
     if args.pydantic_model:
-        resolved_model = resolved_model or DEFAULT_OPENAI_MODEL
+        if resolved_provider == PROVIDER_PERPLEXITY:
+            resolved_model = resolved_model or DEFAULT_PERPLEXITY_STRUCTURED_PRESET
+        else:
+            resolved_model = resolved_model or DEFAULT_OPENAI_MODEL
     elif resolved_provider == PROVIDER_OPENAI:
         resolved_model = resolved_model or DEFAULT_OPENAI_MODEL
     elif resolved_provider == PROVIDER_PERPLEXITY:

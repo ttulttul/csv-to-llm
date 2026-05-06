@@ -640,6 +640,43 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
 
         assert mock_client.responses.parse.call_args.kwargs["tools"] == [{"type": "web_search"}]
 
+    def test_perplexity_structured_output_uses_json_schema(self, sample_pydantic_model):
+        """Perplexity structured output should send JSON Schema and validate output_text."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=sample_pydantic_model,
+            model_class_name="EmailCategory",
+            output_field="category",
+            llm_model="pro-search",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+            provider="perplexity",
+        )
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.output_text = json.dumps({
+            "category": "Category",
+            "explanation": "Because",
+        })
+        mock_client.responses.create.return_value = mock_response
+
+        parsed = csv_to_llm.call_perplexity_structured(
+            prompt_value="Categorize this",
+            structured_config=config,
+            perplexity_client=mock_client,
+        )
+
+        assert parsed.category == "Category"
+        kwargs = mock_client.responses.create.call_args.kwargs
+        assert kwargs["preset"] == "pro-search"
+        assert kwargs["input"] == "Categorize this"
+        assert kwargs["instructions"] == "system"
+        assert kwargs["max_output_tokens"] == 1000
+        assert kwargs["response_format"]["type"] == "json_schema"
+        assert kwargs["response_format"]["json_schema"]["name"] == "EmailCategory"
+        assert kwargs["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
+        assert kwargs["response_format"]["json_schema"]["schema"]["required"] == ["category", "explanation"]
+
     def test_iterative_structured_output_websearch_passes_tools(self, user_hierarchy_pydantic_model):
         """Iterative structured output can enable OpenAI Responses web search per field."""
         config = csv_to_llm.build_structured_output_config(
@@ -706,6 +743,48 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
                 pydantic_model_class="EmailCategory",
                 pydantic_model_field="missing",
             )
+
+    def test_perplexity_structured_iterative_rejected(self, sample_csv, output_csv_path, sample_pydantic_model):
+        """Perplexity structured output supports full-schema mode, not iterative OpenAI parse mode."""
+        with pytest.raises(ValueError, match="pydantic-model-iterate"), \
+             patch.dict(os.environ, {'PERPLEXITY_API_KEY': 'key'}):
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                provider="perplexity",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_field="category",
+                pydantic_model_iterate=True,
+            )
+
+    @patch.dict(os.environ, {'PERPLEXITY_API_KEY': 'test_perplexity_key', 'OPENAI_API_KEY': ''})
+    def test_perplexity_structured_output_flow(self, sample_csv, output_csv_path, sample_pydantic_model):
+        """Perplexity structured output should not require an OpenAI key."""
+        with patch('csv_to_llm.core.call_perplexity_structured') as mock_structured:
+            class Dummy(BaseModel):
+                category: str = "Category"
+                explanation: str = "Because"
+
+            mock_structured.return_value = Dummy()
+
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=sample_csv,
+                output_csv_path=output_csv_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                provider="perplexity",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_field="category",
+                test_first_row=True,
+            )
+
+            assert mock_structured.called
+            df = pd.read_csv(output_csv_path)
+            assert df.loc[0, 'response'] == "Category"
 
     def test_structured_output_field_prefix_conflict(self, sample_csv, output_csv_path, sample_pydantic_model):
         """Providing both field and prefix is rejected."""

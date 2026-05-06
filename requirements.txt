@@ -5,4 +5,5 @@ joblib>=1.2.0
 tqdm>=4.64.0
 colorama>=0.4.4 
 openai>=2.34.0
+perplexityai>=0.32.1
 pydantic>=2.5.0

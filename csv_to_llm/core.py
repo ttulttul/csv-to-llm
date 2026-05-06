@@ -21,6 +21,7 @@ from joblib import Memory
 from tqdm import tqdm
 from colorama import Fore, Style, init
 from openai import OpenAI
+from perplexity import Perplexity
 from pydantic import BaseModel, create_model
 from .embeddings import get_embedding
 
@@ -44,6 +45,7 @@ SUPPORTED_LLM_PROVIDERS = (PROVIDER_ANTHROPIC, PROVIDER_OPENAI, PROVIDER_PERPLEX
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 DEFAULT_PERPLEXITY_MODEL = "sonar-pro"
+DEFAULT_PERPLEXITY_STRUCTURED_PRESET = "pro-search"
 DEFAULT_PROVIDER = PROVIDER_ANTHROPIC
 PERPLEXITY_BASE_URL = "https://api.perplexity.ai"
 
@@ -62,6 +64,16 @@ def _openai_web_search_tools(enabled: bool) -> Optional[List[Dict[str, str]]]:
     return [{"type": "web_search"}]
 
 
+def _response_schema_name(raw_name: str) -> str:
+    """Build a 1-64 character alphanumeric JSON schema name for provider APIs."""
+
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", raw_name) or "StructuredOutput"
+    if len(cleaned) <= 64:
+        return cleaned
+    digest = hashlib.sha1(raw_name.encode("utf-8")).hexdigest()[:12]
+    return f"{cleaned[:52]}{digest}"[:64]
+
+
 @dataclass(frozen=True)
 class StructuredOutputConfig:
     """Runtime configuration for Pydantic-based structured outputs."""
@@ -73,6 +85,7 @@ class StructuredOutputConfig:
     max_output_tokens: int
     temperature: float
     system_prompt: str
+    provider: str = PROVIDER_OPENAI
     iterate_fields: bool = False
     iterate_parallelism: int = 1
     model_websearch: bool = False
@@ -123,6 +136,20 @@ def _get_thread_local_perplexity_client() -> OpenAI:
     if client is None:
         client = OpenAI(api_key=api_key, base_url=PERPLEXITY_BASE_URL)
         _thread_local_clients.perplexity_client = client
+    return client
+
+
+def _get_thread_local_perplexity_responses_client() -> Perplexity:
+    """Fetch (or create) a thread-local Perplexity SDK client for Responses API calls."""
+
+    api_key = os.getenv("PERPLEXITY_API_KEY")
+    if not api_key:
+        raise RuntimeError("PERPLEXITY_API_KEY not found in environment variables")
+
+    client = getattr(_thread_local_clients, "perplexity_responses_client", None)
+    if client is None:
+        client = Perplexity(api_key=api_key)
+        _thread_local_clients.perplexity_responses_client = client
     return client
 
 
@@ -224,6 +251,7 @@ def build_structured_output_config(
     max_tokens: int,
     temperature: float,
     system_prompt: str,
+    provider: str = PROVIDER_OPENAI,
     iterate_fields: bool = False,
     iterate_parallelism: int = 1,
     model_websearch: bool = False,
@@ -242,6 +270,7 @@ def build_structured_output_config(
         max_output_tokens=max_tokens,
         temperature=temperature,
         system_prompt=system_prompt,
+        provider=provider,
         iterate_fields=iterate_fields,
         iterate_parallelism=max(1, int(iterate_parallelism)),
         model_websearch=model_websearch,
@@ -279,6 +308,44 @@ def call_openai_structured(prompt_value: str, structured_config: StructuredOutpu
         raise RuntimeError("Structured output parsing failed: no parsed content returned")
 
     return parsed
+
+
+def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) -> Dict[str, Any]:
+    """Build a Perplexity JSON Schema response format for a Pydantic model."""
+
+    schema = model_cls.model_json_schema()
+    schema["required"] = list(model_cls.model_fields.keys())
+    schema["additionalProperties"] = False
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _response_schema_name(schema_name),
+            "schema": schema,
+        },
+    }
+
+
+def call_perplexity_structured(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    perplexity_client: Optional[Perplexity] = None,
+) -> BaseModel:
+    """Call Perplexity with JSON Schema structured outputs and return the parsed BaseModel."""
+
+    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
+    client = perplexity_client or Perplexity()
+    response = client.responses.create(
+        preset=structured_config.llm_model,
+        input=prompt_value,
+        instructions=structured_config.system_prompt,
+        max_output_tokens=structured_config.max_output_tokens,
+        response_format=_perplexity_response_format(model_cls, model_cls.__name__),
+    )
+
+    output_text = getattr(response, "output_text", None)
+    if not output_text:
+        raise RuntimeError("Perplexity structured output failed: no output_text returned")
+    return model_cls.model_validate_json(output_text)
 
 
 def _humanize_identifier(value: str) -> str:
@@ -488,6 +555,45 @@ def call_structured_openai(
         structured_config=structured_config,
         openai_client=openai_client,
     )
+
+
+def call_structured_perplexity(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    perplexity_client: Optional[Perplexity] = None,
+) -> BaseModel:
+    """Call Perplexity structured outputs."""
+
+    if structured_config.iterate_fields:
+        raise RuntimeError("--pydantic-model-iterate is not supported for provider='perplexity'")
+    return call_perplexity_structured(
+        prompt_value=prompt_value,
+        structured_config=structured_config,
+        perplexity_client=perplexity_client,
+    )
+
+
+def call_structured_model(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    openai_client: Optional[OpenAI] = None,
+    perplexity_client: Optional[Perplexity] = None,
+) -> BaseModel:
+    """Call the configured structured output provider."""
+
+    if structured_config.provider == PROVIDER_OPENAI:
+        return call_structured_openai(
+            prompt_value=prompt_value,
+            structured_config=structured_config,
+            openai_client=openai_client,
+        )
+    if structured_config.provider == PROVIDER_PERPLEXITY:
+        return call_structured_perplexity(
+            prompt_value=prompt_value,
+            structured_config=structured_config,
+            perplexity_client=perplexity_client,
+        )
+    raise RuntimeError(f"Structured outputs are not supported for provider='{structured_config.provider}'")
 
 
 def _iterative_field_parallelism(parallel: int, total_tasks: int) -> int:
@@ -731,10 +837,16 @@ def process_single_row(task: RowProcessingArgs):
 
     try:
         if structured_config:
-            openai_client = _get_thread_local_openai_client()
+            openai_client = _get_thread_local_openai_client() if structured_config.provider == PROVIDER_OPENAI else None
+            perplexity_structured_client = (
+                _get_thread_local_perplexity_responses_client()
+                if structured_config.provider == PROVIDER_PERPLEXITY
+                else None
+            )
             provider_client = None
         else:
             openai_client = None
+            perplexity_structured_client = None
             provider_client = _get_provider_client(task.provider)
     except RuntimeError as exc:
         return task.index, None, str(exc)
@@ -753,10 +865,11 @@ def process_single_row(task: RowProcessingArgs):
     try:
         def _request(attempt: int):
             if structured_config:
-                parsed = call_structured_openai(
+                parsed = call_structured_model(
                     prompt_value=prompt_value,
                     structured_config=structured_config,
                     openai_client=openai_client,
+                    perplexity_client=perplexity_structured_client,
                 )
                 if structured_config.output_field:
                     target_value = getattr(parsed, structured_config.output_field, None)
@@ -900,16 +1013,18 @@ def process_csv_with_claude(
         raise ValueError(
             f"Unsupported provider '{provider}'. Choose one of: {', '.join(SUPPORTED_LLM_PROVIDERS)}"
         )
-    if pydantic_model_path and provider != PROVIDER_OPENAI:
-        raise ValueError("Structured outputs currently require provider='openai'")
+    if pydantic_model_path and provider not in (PROVIDER_OPENAI, PROVIDER_PERPLEXITY):
+        raise ValueError("Structured outputs currently require provider='openai' or provider='perplexity'")
     if model_websearch and provider != PROVIDER_OPENAI:
         raise ValueError("--model-websearch currently requires provider='openai'")
+    if pydantic_model_iterate and provider != PROVIDER_OPENAI:
+        raise ValueError("--pydantic-model-iterate currently requires provider='openai'")
     
     if model is None:
-        if pydantic_model_path or provider == PROVIDER_OPENAI:
+        if provider == PROVIDER_OPENAI:
             model = DEFAULT_OPENAI_MODEL
         elif provider == PROVIDER_PERPLEXITY:
-            model = DEFAULT_PERPLEXITY_MODEL
+            model = DEFAULT_PERPLEXITY_STRUCTURED_PRESET if pydantic_model_path else DEFAULT_PERPLEXITY_MODEL
         else:
             model = DEFAULT_ANTHROPIC_MODEL
 
@@ -1010,14 +1125,17 @@ def process_csv_with_claude(
             max_tokens=max_tokens,
             temperature=temperature,
             system_prompt=system_prompt,
+            provider=provider,
             iterate_fields=pydantic_model_iterate,
             model_websearch=model_websearch,
         )
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
-            raise ValueError("OPENAI_API_KEY not found in environment variables in main process")
+        required_key = "OPENAI_API_KEY" if provider == PROVIDER_OPENAI else "PERPLEXITY_API_KEY"
+        api_key = os.getenv(required_key)
+        if not api_key:
+            raise ValueError(f"{required_key} not found in environment variables in main process")
         if parallel == 1:
-            openai_client = OpenAI(api_key=openai_api_key)
+            if provider == PROVIDER_OPENAI:
+                openai_client = OpenAI(api_key=api_key)
     else:
         required_key = {
             PROVIDER_ANTHROPIC: "ANTHROPIC_API_KEY",
@@ -1122,9 +1240,12 @@ def process_csv_with_claude(
 
     else: # Sequential processing (parallel == 1)
         print(f"{Fore.BLUE}🔄{Style.RESET_ALL} Starting sequential processing")
+        perplexity_structured_client = None
         if structured_output_config:
-            if openai_client is None:
+            if structured_output_config.provider == PROVIDER_OPENAI and openai_client is None:
                 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            elif structured_output_config.provider == PROVIDER_PERPLEXITY:
+                perplexity_structured_client = Perplexity(api_key=os.getenv("PERPLEXITY_API_KEY"))
         else:
             if provider_client is None:
                 provider_client = _get_provider_client(provider)
@@ -1168,10 +1289,11 @@ def process_csv_with_claude(
 
                 def _request(attempt: int):
                     if structured_output_config:
-                        parsed = call_structured_openai(
+                        parsed = call_structured_model(
                             prompt_value=prompt_value,
                             structured_config=structured_output_config,
                             openai_client=openai_client,
+                            perplexity_client=perplexity_structured_client,
                         )
                         if structured_output_config.output_field:
                             target_value = getattr(parsed, structured_output_config.output_field, None)
