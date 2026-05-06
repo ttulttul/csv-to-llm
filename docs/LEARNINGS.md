@@ -10,3 +10,4 @@
 - 2026-05-05: OpenAI Responses web search is opt-in via `tools=[{"type": "web_search"}]`; Perplexity Responses supports native web search with `tools=[{"type": "web_search"}, {"type": "fetch_url"}]`.
 - 2026-05-05: Perplexity structured output uses the official `perplexityai` SDK, `responses.create`, and JSON Schema `response_format`, then validates `response.output_text` through the requested Pydantic model.
 - 2026-05-05: Auto mode needs provider-aware schema design because Perplexity structured extraction expects a Perplexity-generated compatible Pydantic schema and preset model before the normal row-processing pipeline starts.
+- 2026-05-05: Structured-output caching should store raw JSON and re-validate through the requested Pydantic model on each read, avoiding pickled SDK clients or dynamic model instances in the cache.

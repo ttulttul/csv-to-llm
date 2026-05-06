@@ -180,9 +180,15 @@ csv-to-llm \
 Options:
 
 - `--auto-sample-size`: Number of rows (default 5) included in the schema-design request.
+- `--auto-multi-column`: Let auto mode choose a multi-field schema and populate multiple prefixed output columns when the instruction naturally calls for several values.
 - Auto mode supports `--provider openai` and `--provider perplexity`. With no provider, it defaults to OpenAI for backward compatibility.
 - With `--provider perplexity`, schema design and structured extraction use the Perplexity Responses API preset from `--model`, defaulting to `pro-search`.
 - `--model-websearch` is available with OpenAI and Perplexity auto mode. Any manual prompt or Pydantic arguments are ignored/forbidden in auto mode.
+- With `--verbose`, auto mode prints the generated prompt template before row processing starts.
+
+### Caching
+
+LLM calls are cached automatically in `./llm_cache` using joblib. The cache covers plain text generation, Pydantic structured outputs, iterative Pydantic field extraction, and auto-mode schema design. Retries after a failed or empty response bypass the cache for the retry attempt. Embeddings are not cached by this layer.
 
 ## Command Line Options
 
@@ -212,6 +218,7 @@ Options:
 - `--pydantic-model-iterate`: Fill structured output leaf fields one at a time with OpenAI, recursing into nested BaseModel fields before validating the full model
 - `--auto`: One-shot instruction to auto-generate a Pydantic model, prompt template, and output column
 - `--auto-sample-size`: Number of rows to include when designing the auto schema (default: 5)
+- `--auto-multi-column`: Allow auto mode to synthesize multiple output columns when appropriate
 
 ## Python API
 

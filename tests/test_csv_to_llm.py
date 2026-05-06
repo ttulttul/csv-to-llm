@@ -13,8 +13,29 @@ from pydantic import BaseModel, Field
 
 # Import the module under test
 from csv_to_llm import core as csv_to_llm
+from csv_to_llm import auto as csv_to_llm_auto
+from csv_to_llm import cli as csv_to_llm_cli
 from csv_to_llm.core import RowProcessingArgs
-from csv_to_llm.auto import run_auto_mode, AutoModelDesign, _escape_unknown_prompt_fields
+from csv_to_llm.auto import run_auto_mode, AutoModelDesign, AutoPlan, _escape_unknown_prompt_fields
+
+
+@pytest.fixture(autouse=True)
+def clear_llm_caches():
+    """Keep file-backed LLM caches from leaking across tests."""
+
+    cached_functions = [
+        csv_to_llm.call_claude_api_cached,
+        csv_to_llm.call_openai_api_cached,
+        csv_to_llm.call_perplexity_api_cached,
+        csv_to_llm._call_openai_structured_json_cached,
+        csv_to_llm._call_openai_structured_iterative_json_cached,
+        csv_to_llm._call_perplexity_structured_json_cached,
+        csv_to_llm_auto._run_openai_auto_design_json_cached,
+        csv_to_llm_auto._run_perplexity_auto_design_json_cached,
+    ]
+    for cached_function in cached_functions:
+        cached_function.clear()
+    yield
 
 
 class TestCsvToLlm:
@@ -612,6 +633,50 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert any("Biographical identity details for a user profile." in prompt for prompt in prompts)
         assert any("Legal or commonly used given name" in prompt for prompt in prompts)
 
+    def test_iterative_structured_output_uses_cache(self, user_hierarchy_pydantic_model):
+        """Repeated iterative structured calls should reuse the full-model cache."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=user_hierarchy_pydantic_model,
+            model_class_name="User",
+            output_field=None,
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+            iterate_fields=True,
+        )
+        values = {
+            "id": 42,
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "age": 36,
+            "bio": None,
+            "street": "1 Main",
+            "city": "London",
+            "state": "London",
+            "zip_code": "SW1A",
+            "country": "UK",
+            "is_premium": True,
+            "receive_newsletter": False,
+            "theme": "light",
+        }
+        mock_client = Mock()
+
+        def parse_side_effect(**kwargs):
+            model_cls = kwargs["text_format"]
+            field_name = next(iter(model_cls.model_fields.keys()))
+            response = Mock()
+            response.output_parsed = model_cls(**{field_name: values[field_name]})
+            return response
+
+        mock_client.responses.parse.side_effect = parse_side_effect
+
+        first = csv_to_llm.call_openai_structured_iterative("User record", config, mock_client)
+        second = csv_to_llm.call_openai_structured_iterative("User record", config, mock_client)
+
+        assert first.id == second.id == 42
+        assert mock_client.responses.parse.call_count == len(values)
+
     def test_structured_output_websearch_passes_tools(self, sample_pydantic_model):
         """Normal structured output can enable OpenAI Responses web search."""
         config = csv_to_llm.build_structured_output_config(
@@ -641,6 +706,29 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         )
 
         assert mock_client.responses.parse.call_args.kwargs["tools"] == [{"type": "web_search"}]
+
+    def test_openai_structured_output_uses_cache(self, sample_pydantic_model):
+        """Repeated OpenAI structured calls should reuse the joblib cache."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=sample_pydantic_model,
+            model_class_name="EmailCategory",
+            output_field="category",
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+        )
+        model_cls = csv_to_llm._get_pydantic_model_class(sample_pydantic_model, "EmailCategory")
+        mock_client = Mock()
+        response = Mock()
+        response.output_parsed = model_cls(category="Category", explanation="Because")
+        mock_client.responses.parse.return_value = response
+
+        first = csv_to_llm.call_openai_structured("Categorize this", config, mock_client)
+        second = csv_to_llm.call_openai_structured("Categorize this", config, mock_client)
+
+        assert first.category == second.category == "Category"
+        assert mock_client.responses.parse.call_count == 1
 
     def test_perplexity_structured_output_uses_json_schema(self, sample_pydantic_model):
         """Perplexity structured output should send JSON Schema and validate output_text."""
@@ -680,6 +768,29 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert kwargs["response_format"]["json_schema"]["name"] == "EmailCategory"
         assert kwargs["response_format"]["json_schema"]["schema"]["additionalProperties"] is False
         assert kwargs["response_format"]["json_schema"]["schema"]["required"] == ["category", "explanation"]
+
+    def test_perplexity_structured_output_uses_cache(self, sample_pydantic_model):
+        """Repeated Perplexity structured calls should reuse the joblib cache."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=sample_pydantic_model,
+            model_class_name="EmailCategory",
+            output_field="category",
+            llm_model="pro-search",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+            provider="perplexity",
+        )
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.output_text = json.dumps({"category": "Category", "explanation": "Because"})
+        mock_client.responses.create.return_value = mock_response
+
+        first = csv_to_llm.call_perplexity_structured("Categorize this", config, mock_client)
+        second = csv_to_llm.call_perplexity_structured("Categorize this", config, mock_client)
+
+        assert first.category == second.category == "Category"
+        assert mock_client.responses.create.call_count == 1
 
     def test_iterative_structured_output_websearch_passes_tools(self, user_hierarchy_pydantic_model):
         """Iterative structured output can enable OpenAI Responses web search per field."""
@@ -1162,6 +1273,60 @@ class TestAutoMode:
         assert parse_kwargs["model"] == "gpt-test"
         assert parse_kwargs["tools"] == [{"type": "web_search"}]
 
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_openai_uses_cache(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"subject": ["Hello"], "body": ["a"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="EmailCategory",
+            python_code="from pydantic import BaseModel\n\nclass EmailCategory(BaseModel):\n    category: str\n",
+            primary_field="category",
+            prompt_template="Classify this subject: {subject}",
+            output_column_name="llm_category",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        first = run_auto_mode("Categorize cached", csv_path, 1, model="gpt-test")
+        second = run_auto_mode("Categorize cached", csv_path, 1, model="gpt-test")
+
+        assert first.prompt_template == second.prompt_template == design.prompt_template
+        assert mock_client.responses.parse.call_count == 1
+
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_multi_column_updates_system_prompt(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"subject": ["Hello"], "body": ["a"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="EmailCategory",
+            python_code="from pydantic import BaseModel\n\nclass EmailCategory(BaseModel):\n    category: str\n",
+            primary_field=None,
+            prompt_template="Classify this subject: {subject}",
+            output_column_name="structured_payload",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        run_auto_mode(
+            instruction="Categorize multi",
+            input_csv_path=csv_path,
+            sample_size=1,
+            model="gpt-test",
+            auto_multi_column=True,
+        )
+
+        system_prompt = mock_client.responses.parse.call_args.kwargs["input"][0]["content"]
+        assert "one field per useful output column" in system_prompt
+        assert "primary_field to null" in system_prompt
+
     def test_run_auto_mode_perplexity_generates_files(self, temp_dir):
         csv_path = os.path.join(temp_dir, "auto.csv")
         pd.DataFrame({"subject": ["Hello", "World"], "body": ["a", "b"]}).to_csv(csv_path, index=False)
@@ -1331,6 +1496,42 @@ class TestAutoMode:
             ["Provider Name", "Fit: SMTP Relay"],
         )
         assert rendered == "Classify Shopify. Existing SMTP relay fit: Poor Fit"
+
+
+class TestCliAutoMode(TestCsvToLlm):
+
+    def test_cli_auto_verbose_prints_prompt_and_passes_multi_column_flag(self, temp_dir, capsys):
+        input_path = os.path.join(temp_dir, "input.csv")
+        output_path = os.path.join(temp_dir, "output.csv")
+        model_path = os.path.join(temp_dir, "auto_model.py")
+        pd.DataFrame({"subject": ["Hello"]}).to_csv(input_path, index=False)
+
+        auto_plan = AutoPlan(
+            prompt_template="Classify {subject}",
+            pydantic_model_path=model_path,
+            pydantic_model_class="AutoModel",
+            primary_field=None,
+            output_column="structured_payload",
+        )
+
+        argv = [
+            "csv-to-llm",
+            "--input", input_path,
+            "--output", output_path,
+            "--auto", "Classify multiple things",
+            "--auto-multi-column",
+            "--verbose",
+        ]
+        with patch.object(sys, "argv", argv), \
+             patch("csv_to_llm.cli.run_auto_mode", return_value=auto_plan) as mock_auto, \
+             patch("csv_to_llm.cli.process_csv_with_claude") as mock_process:
+            csv_to_llm_cli.main()
+
+        captured = capsys.readouterr()
+        assert "Auto prompt:" in captured.out
+        assert "Classify {subject}" in captured.out
+        assert mock_auto.call_args.kwargs["auto_multi_column"] is True
+        assert mock_process.call_args.kwargs["pydantic_model_column_prefix"] == "auto_"
 
 
 if __name__ == "__main__":

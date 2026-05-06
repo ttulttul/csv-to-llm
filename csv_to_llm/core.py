@@ -398,29 +398,82 @@ def build_structured_output_config(
     return config
 
 
-def call_openai_structured(prompt_value: str, structured_config: StructuredOutputConfig, openai_client: Optional[OpenAI] = None) -> BaseModel:
-    """Call OpenAI with Structured Outputs enabled and return the parsed BaseModel."""
+def _call_openai_structured_json(
+    client: OpenAI,
+    prompt_value: str,
+    model_reference: str,
+    class_name: Optional[str],
+    llm_model: str,
+    max_output_tokens: int,
+    temperature: float,
+    system_prompt: str,
+    model_websearch: bool,
+) -> str:
+    """Call OpenAI with Structured Outputs enabled and return JSON."""
 
-    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
-    client = openai_client or OpenAI()
+    model_cls = _get_pydantic_model_class(model_reference, class_name)
 
     response = client.responses.parse(
-        model=structured_config.llm_model,
+        model=llm_model,
         input=[
-            {"role": "system", "content": structured_config.system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt_value},
         ],
         text_format=model_cls,
-        temperature=structured_config.temperature,
-        max_output_tokens=structured_config.max_output_tokens,
-        tools=_openai_web_search_tools(structured_config.model_websearch),
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        tools=_openai_web_search_tools(model_websearch),
     )
 
     parsed = response.output_parsed
     if parsed is None:
         raise RuntimeError("Structured output parsing failed: no parsed content returned")
 
-    return parsed
+    return parsed.model_dump_json()
+
+
+@memory.cache(ignore=["client"])
+def _call_openai_structured_json_cached(
+    client: OpenAI,
+    prompt_value: str,
+    model_reference: str,
+    class_name: Optional[str],
+    llm_model: str,
+    max_output_tokens: int,
+    temperature: float,
+    system_prompt: str,
+    model_websearch: bool,
+) -> str:
+    return _call_openai_structured_json(
+        client,
+        prompt_value,
+        model_reference,
+        class_name,
+        llm_model,
+        max_output_tokens,
+        temperature,
+        system_prompt,
+        model_websearch,
+    )
+
+
+def call_openai_structured(prompt_value: str, structured_config: StructuredOutputConfig, openai_client: Optional[OpenAI] = None) -> BaseModel:
+    """Call OpenAI with Structured Outputs enabled and return the parsed BaseModel."""
+
+    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
+    client = openai_client or OpenAI()
+    output_json = _call_openai_structured_json_cached(
+        client=client,
+        prompt_value=prompt_value,
+        model_reference=structured_config.model_reference,
+        class_name=structured_config.class_name,
+        llm_model=structured_config.llm_model,
+        max_output_tokens=structured_config.max_output_tokens,
+        temperature=structured_config.temperature,
+        system_prompt=structured_config.system_prompt,
+        model_websearch=structured_config.model_websearch,
+    )
+    return model_cls.model_validate_json(output_json)
 
 
 def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) -> Dict[str, Any]:
@@ -438,6 +491,60 @@ def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) ->
     }
 
 
+def _call_perplexity_structured_json(
+    client: Perplexity,
+    prompt_value: str,
+    model_reference: str,
+    class_name: Optional[str],
+    llm_model: str,
+    max_output_tokens: int,
+    system_prompt: str,
+    model_websearch: bool,
+) -> str:
+    """Call Perplexity with JSON Schema structured outputs and return JSON."""
+
+    model_cls = _get_pydantic_model_class(model_reference, class_name)
+    request_kwargs = {
+        "preset": llm_model,
+        "input": prompt_value,
+        "instructions": system_prompt,
+        "max_output_tokens": max_output_tokens,
+        "response_format": _perplexity_response_format(model_cls, model_cls.__name__),
+    }
+    tools = _perplexity_web_search_tools(model_websearch)
+    if tools:
+        request_kwargs["tools"] = tools
+    response = client.responses.create(**request_kwargs)
+
+    output_text = getattr(response, "output_text", None)
+    if not output_text:
+        raise RuntimeError("Perplexity structured output failed: no output_text returned")
+    return model_cls.model_validate_json(output_text).model_dump_json()
+
+
+@memory.cache(ignore=["client"])
+def _call_perplexity_structured_json_cached(
+    client: Perplexity,
+    prompt_value: str,
+    model_reference: str,
+    class_name: Optional[str],
+    llm_model: str,
+    max_output_tokens: int,
+    system_prompt: str,
+    model_websearch: bool,
+) -> str:
+    return _call_perplexity_structured_json(
+        client,
+        prompt_value,
+        model_reference,
+        class_name,
+        llm_model,
+        max_output_tokens,
+        system_prompt,
+        model_websearch,
+    )
+
+
 def call_perplexity_structured(
     prompt_value: str,
     structured_config: StructuredOutputConfig,
@@ -447,22 +554,17 @@ def call_perplexity_structured(
 
     model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
     client = perplexity_client or Perplexity(api_key=_get_perplexity_api_key())
-    request_kwargs = {
-        "preset": structured_config.llm_model,
-        "input": prompt_value,
-        "instructions": structured_config.system_prompt,
-        "max_output_tokens": structured_config.max_output_tokens,
-        "response_format": _perplexity_response_format(model_cls, model_cls.__name__),
-    }
-    tools = _perplexity_web_search_tools(structured_config.model_websearch)
-    if tools:
-        request_kwargs["tools"] = tools
-    response = client.responses.create(**request_kwargs)
-
-    output_text = getattr(response, "output_text", None)
-    if not output_text:
-        raise RuntimeError("Perplexity structured output failed: no output_text returned")
-    return model_cls.model_validate_json(output_text)
+    output_json = _call_perplexity_structured_json_cached(
+        client=client,
+        prompt_value=prompt_value,
+        model_reference=structured_config.model_reference,
+        class_name=structured_config.class_name,
+        llm_model=structured_config.llm_model,
+        max_output_tokens=structured_config.max_output_tokens,
+        system_prompt=structured_config.system_prompt,
+        model_websearch=structured_config.model_websearch,
+    )
+    return model_cls.model_validate_json(output_json)
 
 
 def _humanize_identifier(value: str) -> str:
@@ -612,15 +714,34 @@ def _call_openai_structured_field(
     return getattr(parsed, field_name)
 
 
-def call_openai_structured_iterative(
+def _call_openai_structured_iterative_json(
+    client: OpenAI,
     prompt_value: str,
-    structured_config: StructuredOutputConfig,
-    openai_client: Optional[OpenAI] = None,
-) -> BaseModel:
-    """Fill a Pydantic model by asking OpenAI for one leaf field at a time."""
+    model_reference: str,
+    class_name: Optional[str],
+    llm_model: str,
+    max_output_tokens: int,
+    temperature: float,
+    system_prompt: str,
+    model_websearch: bool,
+    iterate_parallelism: int,
+) -> str:
+    """Fill a Pydantic model iteratively and return JSON."""
 
-    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
-    client = openai_client or OpenAI()
+    model_cls = _get_pydantic_model_class(model_reference, class_name)
+    structured_config = StructuredOutputConfig(
+        model_reference=model_reference,
+        class_name=class_name,
+        output_field=None,
+        llm_model=llm_model,
+        max_output_tokens=max_output_tokens,
+        temperature=temperature,
+        system_prompt=system_prompt,
+        provider=PROVIDER_OPENAI,
+        iterate_fields=True,
+        iterate_parallelism=iterate_parallelism,
+        model_websearch=model_websearch,
+    )
     payload: Dict[str, Any] = {}
     leaf_fields = list(_iter_structured_leaf_fields(model_cls))
 
@@ -651,7 +772,58 @@ def call_openai_structured_iterative(
                 field_path, field_value = future.result()
                 _set_nested_value(payload, field_path, field_value)
 
-    return model_cls.model_validate(payload)
+    return model_cls.model_validate(payload).model_dump_json()
+
+
+@memory.cache(ignore=["client"])
+def _call_openai_structured_iterative_json_cached(
+    client: OpenAI,
+    prompt_value: str,
+    model_reference: str,
+    class_name: Optional[str],
+    llm_model: str,
+    max_output_tokens: int,
+    temperature: float,
+    system_prompt: str,
+    model_websearch: bool,
+    iterate_parallelism: int,
+) -> str:
+    return _call_openai_structured_iterative_json(
+        client,
+        prompt_value,
+        model_reference,
+        class_name,
+        llm_model,
+        max_output_tokens,
+        temperature,
+        system_prompt,
+        model_websearch,
+        iterate_parallelism,
+    )
+
+
+def call_openai_structured_iterative(
+    prompt_value: str,
+    structured_config: StructuredOutputConfig,
+    openai_client: Optional[OpenAI] = None,
+) -> BaseModel:
+    """Fill a Pydantic model by asking OpenAI for one leaf field at a time."""
+
+    model_cls = _get_pydantic_model_class(structured_config.model_reference, structured_config.class_name)
+    client = openai_client or OpenAI()
+    output_json = _call_openai_structured_iterative_json_cached(
+        client=client,
+        prompt_value=prompt_value,
+        model_reference=structured_config.model_reference,
+        class_name=structured_config.class_name,
+        llm_model=structured_config.llm_model,
+        max_output_tokens=structured_config.max_output_tokens,
+        temperature=structured_config.temperature,
+        system_prompt=structured_config.system_prompt,
+        model_websearch=structured_config.model_websearch,
+        iterate_parallelism=structured_config.iterate_parallelism,
+    )
+    return model_cls.model_validate_json(output_json)
 
 
 def call_structured_openai(

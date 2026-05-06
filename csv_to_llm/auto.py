@@ -19,6 +19,7 @@ from .core import (
     _openai_web_search_tools,
     _perplexity_response_format,
     _perplexity_web_search_tools,
+    memory,
 )
 
 
@@ -69,12 +70,19 @@ def _ensure_python_file(code: str, class_name: str, directory: str) -> str:
     return file_path
 
 
-def _auto_design_system_prompt() -> str:
-    return (
+def _auto_design_system_prompt(auto_multi_column: bool = False) -> str:
+    prompt = (
         "You design Pydantic BaseModel schemas for CSV data. "
         "Given column metadata and sample rows, produce Python code for a Pydantic BaseModel. "
         "Also provide a prompt template that references CSV columns via {column_name}."
     )
+    if auto_multi_column:
+        prompt += (
+            " If the user's request naturally asks for multiple output values, design a model with "
+            "one field per useful output column and set primary_field to null so the caller can "
+            "populate multiple CSV columns from the structured response."
+        )
+    return prompt
 
 
 def _auto_design_user_text(instruction: str, columns_meta: list[dict], sample_payload: list[dict]) -> str:
@@ -92,16 +100,40 @@ def _run_openai_auto_design(
     model_name: str,
     temperature: float,
     model_websearch: bool,
+    auto_multi_column: bool,
     openai_client: Optional[OpenAI],
 ) -> AutoModelDesign:
-    client = openai_client or OpenAI()
+    output_json = _run_openai_auto_design_json_cached(
+        client=openai_client or OpenAI(),
+        instruction=instruction,
+        columns_meta=columns_meta,
+        sample_payload=sample_payload,
+        model_name=model_name,
+        temperature=temperature,
+        model_websearch=model_websearch,
+        auto_multi_column=auto_multi_column,
+    )
+    return AutoModelDesign.model_validate_json(output_json)
+
+
+@memory.cache(ignore=["client"])
+def _run_openai_auto_design_json_cached(
+    client: OpenAI,
+    instruction: str,
+    columns_meta: list[dict],
+    sample_payload: list[dict],
+    model_name: str,
+    temperature: float,
+    model_websearch: bool,
+    auto_multi_column: bool,
+) -> str:
     response = client.responses.parse(
         model=model_name,
         temperature=temperature,
         input=[
             {
                 "role": "system",
-                "content": _auto_design_system_prompt(),
+                "content": _auto_design_system_prompt(auto_multi_column),
             },
             {
                 "role": "user",
@@ -120,7 +152,7 @@ def _run_openai_auto_design(
     design = response.output_parsed
     if design is None:
         raise RuntimeError("Auto design response parsing failed")
-    return design
+    return design.model_dump_json()
 
 
 def _run_perplexity_auto_design(
@@ -129,13 +161,35 @@ def _run_perplexity_auto_design(
     sample_payload: list[dict],
     model_name: str,
     model_websearch: bool,
+    auto_multi_column: bool,
     perplexity_client: Optional[Perplexity],
 ) -> AutoModelDesign:
-    client = perplexity_client or Perplexity(api_key=_get_perplexity_api_key())
+    output_json = _run_perplexity_auto_design_json_cached(
+        client=perplexity_client or Perplexity(api_key=_get_perplexity_api_key()),
+        instruction=instruction,
+        columns_meta=columns_meta,
+        sample_payload=sample_payload,
+        model_name=model_name,
+        model_websearch=model_websearch,
+        auto_multi_column=auto_multi_column,
+    )
+    return AutoModelDesign.model_validate_json(output_json)
+
+
+@memory.cache(ignore=["client"])
+def _run_perplexity_auto_design_json_cached(
+    client: Perplexity,
+    instruction: str,
+    columns_meta: list[dict],
+    sample_payload: list[dict],
+    model_name: str,
+    model_websearch: bool,
+    auto_multi_column: bool,
+) -> str:
     request_kwargs = {
         "preset": model_name,
         "input": _auto_design_user_text(instruction, columns_meta, sample_payload),
-        "instructions": _auto_design_system_prompt(),
+        "instructions": _auto_design_system_prompt(auto_multi_column),
         "response_format": _perplexity_response_format(AutoModelDesign, AutoModelDesign.__name__),
     }
     tools = _perplexity_web_search_tools(model_websearch)
@@ -146,7 +200,7 @@ def _run_perplexity_auto_design(
     output_text = getattr(response, "output_text", None)
     if not output_text:
         raise RuntimeError("Perplexity auto design failed: no output_text returned")
-    return AutoModelDesign.model_validate_json(output_text)
+    return AutoModelDesign.model_validate_json(output_text).model_dump_json()
 
 
 def _escape_non_column_braces(prompt_template: str, valid_fields: set[str]) -> str:
@@ -213,6 +267,7 @@ def run_auto_mode(
     model: Optional[str] = None,
     temperature: float = 0,
     model_websearch: bool = False,
+    auto_multi_column: bool = False,
     output_column: Optional[str] = None,
     openai_client: Optional[OpenAI] = None,
     perplexity_client: Optional[Perplexity] = None,
@@ -241,6 +296,7 @@ def run_auto_mode(
             model_name=model_name,
             temperature=temperature,
             model_websearch=model_websearch,
+            auto_multi_column=auto_multi_column,
             openai_client=openai_client,
         )
     elif provider == PROVIDER_PERPLEXITY:
@@ -251,6 +307,7 @@ def run_auto_mode(
             sample_payload=sample_payload,
             model_name=model_name,
             model_websearch=model_websearch,
+            auto_multi_column=auto_multi_column,
             perplexity_client=perplexity_client,
         )
     else:

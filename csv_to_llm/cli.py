@@ -78,6 +78,11 @@ def main():
         default=5,
         help="Number of sample rows to include when designing the auto schema (default: 5)",
     )
+    parser.add_argument(
+        "--auto-multi-column",
+        action="store_true",
+        help="Allow auto mode to synthesize multiple output columns when the instruction calls for them",
+    )
 
     args = parser.parse_args()
     auto_instruction = getattr(args, "auto", None)
@@ -129,6 +134,7 @@ def main():
             model=auto_model,
             temperature=args.temperature,
             model_websearch=args.model_websearch,
+            auto_multi_column=args.auto_multi_column,
             output_column=args.output_col,
         )
         args.provider = auto_provider
@@ -144,6 +150,8 @@ def main():
             f"{Fore.GREEN}✓{Style.RESET_ALL} Auto mode synthesized model '{auto_plan.pydantic_model_class}' "
             f"and prompt for column '{args.output_col}'"
         )
+        if args.verbose:
+            print(f"{Fore.CYAN}Auto prompt:{Style.RESET_ALL}\n{prompt_template_value}")
 
     # Determine the prompt template value; file overrides direct string unless auto provided
     if prompt_template_value is None:
