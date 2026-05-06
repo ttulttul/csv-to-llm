@@ -191,6 +191,7 @@ Options:
 - `--system`: System prompt for the selected LLM (default: "You are a helpful assistant.")
 - `--provider`: LLM provider (`anthropic`, `openai`, or `perplexity`; default: `anthropic`)
 - `--model`: Model to use (defaults to `claude-sonnet-4-20250514`, `gpt-5.2`, or `sonar-pro` depending on provider)
+- `--model-websearch`: Enable OpenAI Responses web search via `tools=[{"type": "web_search"}]` for model calls
 - `--max-tokens`: Maximum tokens for response (default: 1000)
 - `--temperature`: Temperature setting (default: 1.0)
 - `--max-retries`: Number of retries after the initial attempt if the LLM response fails validation or is empty (default: 2 retries)

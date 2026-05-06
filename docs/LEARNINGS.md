@@ -7,3 +7,4 @@
 - 2026-05-05: Users expect `--pydantic-model-column-prefix` to create scalar columns for nested structured output fields, not JSON blobs for each top-level nested object.
 - 2026-05-05: Large nested Pydantic schemas can be more reliable when filled one leaf field at a time, then reassembled and validated against the original model.
 - 2026-05-05: Iterative field extraction should consume spare `--parallel` capacity without multiplying row workers by field workers into unbounded API concurrency.
+- 2026-05-05: OpenAI Responses web search is opt-in via `tools=[{"type": "web_search"}]` and should only be enabled for OpenAI provider calls.

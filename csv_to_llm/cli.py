@@ -35,6 +35,7 @@ def main():
     parser.add_argument("--provider", choices=SUPPORTED_LLM_PROVIDERS,
                         help="LLM provider to use for generation")
     parser.add_argument("--model", help="Model to use (defaults differ by provider)")
+    parser.add_argument("--model-websearch", action="store_true", help="Enable OpenAI Responses web search for model calls")
     parser.add_argument("--max-tokens", type=int, default=1000, help="Maximum tokens for response")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature setting")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (INFO level)")
@@ -174,6 +175,9 @@ def main():
     else:
         resolved_provider = resolved_provider or DEFAULT_PROVIDER
 
+    if args.model_websearch and resolved_provider != PROVIDER_OPENAI:
+        parser.error("--model-websearch currently requires --provider openai")
+
     resolved_model = args.model
     if args.pydantic_model:
         resolved_model = resolved_model or DEFAULT_OPENAI_MODEL
@@ -216,6 +220,7 @@ def main():
             pydantic_model_field=args.pydantic_model_field,
             pydantic_model_column_prefix=args.pydantic_model_column_prefix,
             pydantic_model_iterate=args.pydantic_model_iterate,
+            model_websearch=args.model_websearch,
             max_retries=args.max_retries,
         )
 

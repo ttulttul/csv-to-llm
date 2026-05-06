@@ -54,6 +54,14 @@ _UNION_TYPES = tuple(
 )
 
 
+def _openai_web_search_tools(enabled: bool) -> Optional[List[Dict[str, str]]]:
+    """Return the OpenAI Responses web search tool list when enabled."""
+
+    if not enabled:
+        return None
+    return [{"type": "web_search"}]
+
+
 @dataclass(frozen=True)
 class StructuredOutputConfig:
     """Runtime configuration for Pydantic-based structured outputs."""
@@ -67,6 +75,7 @@ class StructuredOutputConfig:
     system_prompt: str
     iterate_fields: bool = False
     iterate_parallelism: int = 1
+    model_websearch: bool = False
 
 
 @dataclass
@@ -86,6 +95,7 @@ class RowProcessingArgs:
     max_retries: int
     column_prefix: Optional[str]
     provider: str = DEFAULT_PROVIDER
+    model_websearch: bool = False
 
 
 def _get_thread_local_openai_client() -> OpenAI:
@@ -216,6 +226,7 @@ def build_structured_output_config(
     system_prompt: str,
     iterate_fields: bool = False,
     iterate_parallelism: int = 1,
+    model_websearch: bool = False,
 ) -> StructuredOutputConfig:
     """Validate user-supplied structured output arguments and build config."""
 
@@ -233,6 +244,7 @@ def build_structured_output_config(
         system_prompt=system_prompt,
         iterate_fields=iterate_fields,
         iterate_parallelism=max(1, int(iterate_parallelism)),
+        model_websearch=model_websearch,
     )
 
     model_cls = _get_pydantic_model_class(config.model_reference, config.class_name)
@@ -259,6 +271,7 @@ def call_openai_structured(prompt_value: str, structured_config: StructuredOutpu
         text_format=model_cls,
         temperature=structured_config.temperature,
         max_output_tokens=structured_config.max_output_tokens,
+        tools=_openai_web_search_tools(structured_config.model_websearch),
     )
 
     parsed = response.output_parsed
@@ -391,6 +404,7 @@ def _call_openai_structured_field(
         text_format=field_model,
         temperature=structured_config.temperature,
         max_output_tokens=structured_config.max_output_tokens,
+        tools=_openai_web_search_tools(structured_config.model_websearch),
     )
 
     parsed = response.output_parsed
@@ -572,7 +586,7 @@ def _call_claude_api(client, model, max_tokens, temperature, system_prompt, prom
     return ""
 
 
-def _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value):
+def _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch=False):
     """Internal helper that performs an OpenAI Responses API call."""
 
     logger.info("Sending request to OpenAI model '%s'. Prompt: %s", model, prompt_value)
@@ -584,6 +598,7 @@ def _call_openai_api(client, model, max_tokens, temperature, system_prompt, prom
         ],
         max_output_tokens=max_tokens,
         temperature=temperature,
+        tools=_openai_web_search_tools(model_websearch),
     )
     response_text = _extract_openai_response_text(response)
     logger.info("Received response from OpenAI. Response: %s", response_text)
@@ -625,12 +640,12 @@ def call_claude_api_uncached(client, model, max_tokens, temperature, system_prom
 
 
 @memory.cache(ignore=['client'])
-def call_openai_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value):
-    return _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+def call_openai_api_cached(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch=False):
+    return _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch)
 
 
-def call_openai_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value):
-    return _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value)
+def call_openai_api_uncached(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch=False):
+    return _call_openai_api(client, model, max_tokens, temperature, system_prompt, prompt_value, model_websearch)
 
 
 @memory.cache(ignore=['client'])
@@ -664,6 +679,7 @@ def call_llm_api(
     system_prompt: str,
     prompt_value: str,
     attempt: int,
+    model_websearch: bool = False,
 ) -> str:
     """Call the selected LLM provider, using the cache only for the first attempt."""
 
@@ -677,14 +693,18 @@ def call_llm_api(
     else:
         raise ValueError(f"Unsupported provider '{provider}'")
 
-    return request_fn(
-        client=client,
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system_prompt=system_prompt,
-        prompt_value=prompt_value,
-    )
+    request_kwargs = {
+        "client": client,
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system_prompt": system_prompt,
+        "prompt_value": prompt_value,
+    }
+    if provider == PROVIDER_OPENAI:
+        request_kwargs["model_websearch"] = model_websearch
+
+    return request_fn(**request_kwargs)
 
 
 def process_single_row(task: RowProcessingArgs):
@@ -739,6 +759,7 @@ def process_single_row(task: RowProcessingArgs):
                 system_prompt=task.system_prompt,
                 prompt_value=prompt_value,
                 attempt=attempt,
+                model_websearch=task.model_websearch,
             )
 
         response = invoke_with_retries(task.max_retries, _request)
@@ -774,6 +795,7 @@ def _iter_row_processing_args(
     structured_output_config: Optional[StructuredOutputConfig],
     max_retries: int,
     column_prefix: Optional[str],
+    model_websearch: bool,
 ) -> Iterable[RowProcessingArgs]:
     """Yield RowProcessingArgs lazily so tasks can be streamed to workers."""
 
@@ -801,6 +823,7 @@ def _iter_row_processing_args(
             structured_config=structured_output_config,
             max_retries=max_retries,
             column_prefix=column_prefix,
+            model_websearch=model_websearch,
         )
 
 
@@ -823,6 +846,7 @@ def process_csv_with_claude(
     pydantic_model_field=None,
     pydantic_model_column_prefix=None,
     pydantic_model_iterate=False,
+    model_websearch=False,
     max_retries=2,
 ):
     """
@@ -847,6 +871,7 @@ def process_csv_with_claude(
         pydantic_model_field (str, optional): Field on the Pydantic model whose value should populate the output column (required unless column prefix is provided).
         pydantic_model_column_prefix (str, optional): When provided, populate additional columns for every Pydantic field using this prefix and serialize the entire model into the output column.
         pydantic_model_iterate (bool): If True, ask the LLM to fill one leaf Pydantic field at a time and reassemble the full model.
+        model_websearch (bool): If True, enable OpenAI Responses web search tools for model calls.
         max_retries (int): Number of retries after the initial attempt if the LLM call fails or returns empty output.
     """
     # Load environment variables from .env file (needed for main process checks)
@@ -861,6 +886,8 @@ def process_csv_with_claude(
         )
     if pydantic_model_path and provider != PROVIDER_OPENAI:
         raise ValueError("Structured outputs currently require provider='openai'")
+    if model_websearch and provider != PROVIDER_OPENAI:
+        raise ValueError("--model-websearch currently requires provider='openai'")
     
     if model is None:
         if pydantic_model_path or provider == PROVIDER_OPENAI:
@@ -968,6 +995,7 @@ def process_csv_with_claude(
             temperature=temperature,
             system_prompt=system_prompt,
             iterate_fields=pydantic_model_iterate,
+            model_websearch=model_websearch,
         )
         openai_api_key = os.getenv("OPENAI_API_KEY")
         if not openai_api_key:
@@ -1052,6 +1080,7 @@ def process_csv_with_claude(
             structured_output_config=structured_output_config,
             max_retries=max_retries,
             column_prefix=pydantic_model_column_prefix,
+            model_websearch=model_websearch,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
@@ -1100,6 +1129,7 @@ def process_csv_with_claude(
             structured_output_config=structured_output_config,
             max_retries=max_retries,
             column_prefix=pydantic_model_column_prefix,
+            model_websearch=model_websearch,
         )
 
         with tqdm(total=total_tasks, desc="Processing rows", unit="row", 
@@ -1144,6 +1174,7 @@ def process_csv_with_claude(
                         system_prompt=system_prompt,
                         prompt_value=prompt_value,
                         attempt=attempt,
+                        model_websearch=model_websearch,
                     )
 
                 try:

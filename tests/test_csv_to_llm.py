@@ -604,6 +604,66 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert any("first_name (of type str) of this User Profile" in prompt for prompt in prompts)
         assert any("theme (of type str) of this User AccountSettings" in prompt for prompt in prompts)
 
+    def test_structured_output_websearch_passes_tools(self, sample_pydantic_model):
+        """Normal structured output can enable OpenAI Responses web search."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=sample_pydantic_model,
+            model_class_name="EmailCategory",
+            output_field="category",
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+            model_websearch=True,
+        )
+        mock_client = Mock()
+
+        class Parsed(BaseModel):
+            category: str
+            explanation: str
+
+        response = Mock()
+        response.output_parsed = Parsed(category="Category", explanation="Because")
+        mock_client.responses.parse.return_value = response
+
+        csv_to_llm.call_openai_structured(
+            prompt_value="Categorize this",
+            structured_config=config,
+            openai_client=mock_client,
+        )
+
+        assert mock_client.responses.parse.call_args.kwargs["tools"] == [{"type": "web_search"}]
+
+    def test_iterative_structured_output_websearch_passes_tools(self, user_hierarchy_pydantic_model):
+        """Iterative structured output can enable OpenAI Responses web search per field."""
+        config = csv_to_llm.build_structured_output_config(
+            model_reference=user_hierarchy_pydantic_model,
+            model_class_name="User",
+            output_field=None,
+            llm_model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0,
+            system_prompt="system",
+            iterate_fields=True,
+            model_websearch=True,
+        )
+        mock_client = Mock()
+        response = Mock()
+        response.output_parsed = Mock(id=42)
+        mock_client.responses.parse.return_value = response
+
+        value = csv_to_llm._call_openai_structured_field(
+            prompt_value="User record",
+            structured_config=config,
+            field_name="id",
+            field_annotation=int,
+            owner_names=["User"],
+            openai_client=mock_client,
+        )
+
+        assert value == 42
+        assert mock_client.responses.parse.call_args.kwargs["tools"] == [{"type": "web_search"}]
+
     def test_iterative_field_model_name_respects_openai_limit(self):
         """Temporary per-field schema names must fit OpenAI's 64-character limit."""
         model_name = csv_to_llm._iterative_field_model_name(
@@ -757,6 +817,26 @@ class TestCachedApiCall(TestCsvToLlm):
 
         assert response == "OpenAI response"
         mock_client.responses.create.assert_called_once()
+
+    def test_openai_responses_api_call_with_web_search(self):
+        """OpenAI text generation can enable Responses web search."""
+        mock_client = Mock()
+        mock_response = Mock()
+        mock_response.output_text = "OpenAI response"
+        mock_client.responses.create.return_value = mock_response
+
+        response = csv_to_llm.call_openai_api_uncached(
+            client=mock_client,
+            model="gpt-5.2",
+            max_tokens=1000,
+            temperature=0.7,
+            system_prompt="Test system",
+            prompt_value="Test prompt",
+            model_websearch=True,
+        )
+
+        assert response == "OpenAI response"
+        assert mock_client.responses.create.call_args.kwargs["tools"] == [{"type": "web_search"}]
 
     def test_perplexity_chat_completion_call(self):
         """Perplexity text generation should use its OpenAI-compatible chat API."""
