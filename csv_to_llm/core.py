@@ -318,12 +318,12 @@ def _annotation_display_name(annotation: Any) -> str:
 def _iter_structured_leaf_fields(
     model_cls: Type[BaseModel],
     path: Optional[List[str]] = None,
-    owner_names: Optional[List[str]] = None,
-) -> Iterable[Tuple[List[str], List[str], str, Any]]:
+    owner_models: Optional[List[Type[BaseModel]]] = None,
+) -> Iterable[Tuple[List[str], List[Type[BaseModel]], str, Any, Optional[str]]]:
     """Yield leaf fields from a model, recursing into nested BaseModel fields."""
 
     current_path = path or []
-    current_owner_names = owner_names or [model_cls.__name__]
+    current_owner_models = owner_models or [model_cls]
 
     for field_name, field_info in model_cls.model_fields.items():
         field_path = current_path + [field_name]
@@ -332,10 +332,10 @@ def _iter_structured_leaf_fields(
             yield from _iter_structured_leaf_fields(
                 nested_model,
                 path=field_path,
-                owner_names=current_owner_names + [nested_model.__name__],
+                owner_models=current_owner_models + [nested_model],
             )
         else:
-            yield field_path, current_owner_names, field_name, field_info.annotation
+            yield field_path, current_owner_models, field_name, field_info.annotation, field_info.description
 
 
 def _set_nested_value(target: Dict[str, Any], path: List[str], value: Any) -> None:
@@ -349,17 +349,29 @@ def _set_nested_value(target: Dict[str, Any], path: List[str], value: Any) -> No
 
 def _build_iterative_field_prompt(
     base_prompt: str,
-    owner_names: List[str],
+    owner_models: List[Type[BaseModel]],
     field_name: str,
     annotation: Any,
+    field_description: Optional[str],
 ) -> str:
     """Build the prompt used when extracting one structured field."""
 
+    owner_names = [model.__name__ for model in owner_models]
     owner_label = " ".join(_humanize_identifier(name) for name in owner_names)
-    return (
+    prompt = (
         f"Respond with the {field_name} (of type {_annotation_display_name(annotation)}) "
         f"of this {owner_label}.\n\nInput:\n{base_prompt}"
     )
+    context_lines = []
+    for model in owner_models:
+        doc = inspect.getdoc(model)
+        if doc:
+            context_lines.append(f"{model.__name__}: {doc}")
+    if field_description:
+        context_lines.append(f"{field_name}: {field_description}")
+    if context_lines:
+        prompt += "\n\nSchema context:\n" + "\n".join(f"- {line}" for line in context_lines)
+    return prompt
 
 
 def _iterative_field_model_name(owner_names: List[str], field_name: str) -> str:
@@ -381,18 +393,21 @@ def _call_openai_structured_field(
     structured_config: StructuredOutputConfig,
     field_name: str,
     field_annotation: Any,
-    owner_names: List[str],
+    owner_models: List[Type[BaseModel]],
+    field_description: Optional[str],
     openai_client: OpenAI,
 ) -> Any:
     """Call OpenAI for a single leaf field using a temporary one-field model."""
 
+    owner_names = [model.__name__ for model in owner_models]
     field_model_name = _iterative_field_model_name(owner_names, field_name)
     field_model = create_model(field_model_name, **{field_name: (field_annotation, ...)})
     field_prompt = _build_iterative_field_prompt(
         base_prompt=prompt_value,
-        owner_names=owner_names,
+        owner_models=owner_models,
         field_name=field_name,
         annotation=field_annotation,
+        field_description=field_description,
     )
 
     response = openai_client.responses.parse(
@@ -425,14 +440,15 @@ def call_openai_structured_iterative(
     payload: Dict[str, Any] = {}
     leaf_fields = list(_iter_structured_leaf_fields(model_cls))
 
-    def fetch_field(field_spec: Tuple[List[str], List[str], str, Any]) -> Tuple[List[str], Any]:
-        field_path, owner_names, field_name, field_annotation = field_spec
+    def fetch_field(field_spec: Tuple[List[str], List[Type[BaseModel]], str, Any, Optional[str]]) -> Tuple[List[str], Any]:
+        field_path, owner_models, field_name, field_annotation, field_description = field_spec
         return field_path, _call_openai_structured_field(
             prompt_value=prompt_value,
             structured_config=structured_config,
             field_name=field_name,
             field_annotation=field_annotation,
-            owner_names=owner_names,
+            owner_models=owner_models,
+            field_description=field_description,
             openai_client=client,
         )
 

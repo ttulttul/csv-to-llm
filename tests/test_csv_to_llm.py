@@ -9,7 +9,7 @@ import sys
 import json
 from dataclasses import replace
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Import the module under test
 from csv_to_llm import core as csv_to_llm
@@ -83,13 +83,15 @@ class TestCsvToLlm:
         model_path = os.path.join(temp_dir, "user_hierarchy_model.py")
         with open(model_path, "w", encoding="utf-8") as f:
             f.write(
-                "from pydantic import BaseModel\n\n"
+                "from pydantic import BaseModel, Field\n\n"
                 "class Profile(BaseModel):\n"
-                "    first_name: str\n"
+                "    \"\"\"Biographical identity details for a user profile.\"\"\"\n"
+                "    first_name: str = Field(description='Legal or commonly used given name')\n"
                 "    last_name: str\n"
                 "    age: int\n"
                 "    bio: str | None = None\n\n"
                 "class Address(BaseModel):\n"
+                "    \"\"\"Postal mailing address for the user.\"\"\"\n"
                 "    street: str\n"
                 "    city: str\n"
                 "    state: str\n"
@@ -100,6 +102,7 @@ class TestCsvToLlm:
                 "    receive_newsletter: bool = True\n"
                 "    theme: str = 'dark'\n\n"
                 "class User(BaseModel):\n"
+                "    \"\"\"Complete account record assembled from source text.\"\"\"\n"
                 "    id: int\n"
                 "    profile: Profile\n"
                 "    address: Address\n"
@@ -603,6 +606,9 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         ]
         assert any("first_name (of type str) of this User Profile" in prompt for prompt in prompts)
         assert any("theme (of type str) of this User AccountSettings" in prompt for prompt in prompts)
+        assert any("Complete account record assembled from source text." in prompt for prompt in prompts)
+        assert any("Biographical identity details for a user profile." in prompt for prompt in prompts)
+        assert any("Legal or commonly used given name" in prompt for prompt in prompts)
 
     def test_structured_output_websearch_passes_tools(self, sample_pydantic_model):
         """Normal structured output can enable OpenAI Responses web search."""
@@ -657,7 +663,8 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             structured_config=config,
             field_name="id",
             field_annotation=int,
-            owner_names=["User"],
+            owner_models=[csv_to_llm._get_pydantic_model_class(user_hierarchy_pydantic_model, "User")],
+            field_description=None,
             openai_client=mock_client,
         )
 
