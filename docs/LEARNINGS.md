@@ -13,3 +13,4 @@
 - 2026-05-05: Structured-output caching should store raw JSON and re-validate through the requested Pydantic model on each read, avoiding pickled SDK clients or dynamic model instances in the cache.
 - 2026-05-07: Provider-generated auto-mode schemas may use postponed annotations like `Optional[int]` without importing `Optional`; generated files now include common typing imports and the dynamic Pydantic loader rebuilds models with a fallback typing namespace.
 - 2026-05-07: Perplexity structured outputs require every object schema to set `required` to every key in `properties`, even nullable or defaulted Pydantic fields; schema normalization now applies that strict shape recursively.
+- 2026-05-07: Auto-mode providers may return a `primary_field` that names the intended output column rather than an actual Pydantic model field. Auto mode now validates that field against the generated model and repairs clear semantic matches such as headcount employee-count fields.

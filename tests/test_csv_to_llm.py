@@ -1385,6 +1385,75 @@ class TestAutoMode:
         assert mock_client.responses.parse.call_count == 1
 
     @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_repairs_invalid_primary_field(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"provider_name": ["Shopify"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="ProviderHeadcountModel",
+            python_code=(
+                "from typing import Optional, Literal\n"
+                "from pydantic import BaseModel, Field\n\n"
+                "class ProviderHeadcountModel(BaseModel):\n"
+                "    headcount_employee_count: Optional[int] = Field(default=None)\n"
+                "    headcount_confidence: Literal['high', 'medium', 'low']\n"
+                "    headcount_scope: Literal['global_company', 'unknown']\n"
+                "    reasoning: str\n"
+            ),
+            primary_field="provider_headcount_answer",
+            prompt_template="Estimate employee headcount for {provider_name}",
+            output_column_name="provider_headcount_answer",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="How many employees does the company listed in provider_name have?",
+            input_csv_path=csv_path,
+            sample_size=1,
+            model="gpt-test",
+        )
+
+        assert plan.primary_field == "headcount_employee_count"
+        assert plan.output_column == "provider_headcount_answer"
+
+    @patch('csv_to_llm.auto.OpenAI')
+    def test_run_auto_mode_invalid_primary_field_falls_back_to_multi_column(self, mock_openai, temp_dir):
+        csv_path = os.path.join(temp_dir, "auto.csv")
+        pd.DataFrame({"subject": ["Hello"]}).to_csv(csv_path, index=False)
+
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        mock_response = Mock()
+        design = AutoModelDesign(
+            model_name="AmbiguousModel",
+            python_code=(
+                "from pydantic import BaseModel\n\n"
+                "class AmbiguousModel(BaseModel):\n"
+                "    category: str\n"
+                "    action: str\n"
+            ),
+            primary_field="missing_answer",
+            prompt_template="Classify {subject}",
+            output_column_name="structured_payload",
+        )
+        mock_response.output_parsed = design
+        mock_client.responses.parse.return_value = mock_response
+
+        plan = run_auto_mode(
+            instruction="Classify this record",
+            input_csv_path=csv_path,
+            sample_size=1,
+            model="gpt-test",
+        )
+
+        assert plan.primary_field is None
+        assert plan.output_column == "structured_payload"
+
+    @patch('csv_to_llm.auto.OpenAI')
     def test_run_auto_mode_multi_column_updates_system_prompt(self, mock_openai, temp_dir):
         csv_path = os.path.join(temp_dir, "auto.csv")
         pd.DataFrame({"subject": ["Hello"], "body": ["a"]}).to_csv(csv_path, index=False)

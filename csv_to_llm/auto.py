@@ -1,8 +1,9 @@
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Type
 
 import pandas as pd
 from openai import OpenAI
@@ -16,12 +17,15 @@ from .core import (
     PROVIDER_PERPLEXITY,
     _extract_prompt_fields,
     _get_perplexity_api_key,
+    _get_pydantic_model_class,
     _log_cache_status,
     _openai_web_search_tools,
     _perplexity_response_format,
     _perplexity_web_search_tools,
     memory,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AutoModelDesign(BaseModel):
@@ -99,6 +103,82 @@ def _ensure_python_file(code: str, class_name: str, directory: str) -> str:
         if not normalized_code.endswith("\n"):
             f.write("\n")
     return file_path
+
+
+def _identifier_tokens(value: Optional[str]) -> set[str]:
+    """Split an identifier-like value into normalized comparison tokens."""
+
+    if not value:
+        return set()
+    tokens = re.findall(r"[a-zA-Z0-9]+", value.lower())
+    normalized_tokens = set(tokens)
+    normalized_tokens.update(token[:-1] for token in tokens if len(token) > 3 and token.endswith("s"))
+    return normalized_tokens
+
+
+def _score_auto_field_name(field_name: str, target_tokens: set[str]) -> int:
+    """Score how well a Pydantic field name matches the auto-mode target."""
+
+    field_tokens = _identifier_tokens(field_name)
+    score = len(field_tokens & target_tokens)
+    if {"employee", "headcount", "count"} & field_tokens:
+        score += 1
+    if {"reason", "reasoning", "explanation", "confidence", "source", "scope"} & field_tokens:
+        score -= 1
+    return score
+
+
+def _resolve_auto_primary_field(
+    design: AutoModelDesign,
+    model_cls: Type[BaseModel],
+    instruction: str,
+    auto_multi_column: bool,
+) -> Optional[str]:
+    """Return a valid primary field from the generated model, if one is clear."""
+
+    if auto_multi_column:
+        return None
+
+    model_fields = list(model_cls.model_fields.keys())
+    if design.primary_field in model_fields:
+        return design.primary_field
+
+    target_tokens = set()
+    for value in (design.primary_field, design.output_column_name, instruction):
+        target_tokens.update(_identifier_tokens(value))
+
+    scored_fields = sorted(
+        (
+            (_score_auto_field_name(field_name, target_tokens), field_name)
+            for field_name in model_fields
+        ),
+        reverse=True,
+    )
+    if scored_fields and scored_fields[0][0] > 0:
+        resolved_field = scored_fields[0][1]
+        logger.warning(
+            "Auto-generated primary field '%s' was not found on '%s'; using '%s' instead.",
+            design.primary_field,
+            model_cls.__name__,
+            resolved_field,
+        )
+        return resolved_field
+
+    if len(model_fields) == 1:
+        logger.warning(
+            "Auto-generated primary field '%s' was not found on '%s'; using the only model field '%s'.",
+            design.primary_field,
+            model_cls.__name__,
+            model_fields[0],
+        )
+        return model_fields[0]
+
+    logger.warning(
+        "Auto-generated primary field '%s' was not found on '%s'; falling back to multi-column output.",
+        design.primary_field,
+        model_cls.__name__,
+    )
+    return None
 
 
 def _auto_design_system_prompt(auto_multi_column: bool = False) -> str:
@@ -391,9 +471,16 @@ def run_auto_mode(
 
     auto_dir = os.path.join(os.path.dirname(os.path.abspath(input_csv_path)), ".csv_to_llm_auto")
     model_path = _ensure_python_file(python_code, class_name, auto_dir)
+    model_cls = _get_pydantic_model_class(model_path, class_name)
+    primary_field = _resolve_auto_primary_field(
+        design=design,
+        model_cls=model_cls,
+        instruction=instruction,
+        auto_multi_column=auto_multi_column,
+    )
 
     suggested_output = output_column or design.output_column_name or _sanitize_identifier(
-        (design.primary_field or "auto_output"), "auto_output"
+        (primary_field or "auto_output"), "auto_output"
     )
 
     prompt_template = _escape_non_column_braces(design.prompt_template.strip(), set(df.columns))
@@ -419,6 +506,6 @@ def run_auto_mode(
         prompt_template=prompt_template,
         pydantic_model_path=model_path,
         pydantic_model_class=class_name,
-        primary_field=design.primary_field,
+        primary_field=primary_field,
         output_column=suggested_output,
     )
