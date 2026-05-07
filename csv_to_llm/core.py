@@ -539,8 +539,6 @@ def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) ->
     """Build a Perplexity JSON Schema response format for a Pydantic model."""
 
     schema = _sanitize_perplexity_json_schema(model_cls.model_json_schema())
-    schema["required"] = list(model_cls.model_fields.keys())
-    schema["additionalProperties"] = False
     return {
         "type": "json_schema",
         "json_schema": {
@@ -551,14 +549,19 @@ def _perplexity_response_format(model_cls: Type[BaseModel], schema_name: str) ->
 
 
 def _sanitize_perplexity_json_schema(value: Any) -> Any:
-    """Remove JSON Schema annotations unsupported by Perplexity response_format."""
+    """Normalize JSON Schema for Perplexity response_format strict validation."""
 
     if isinstance(value, dict):
-        return {
+        sanitized = {
             key: _sanitize_perplexity_json_schema(nested_value)
             for key, nested_value in value.items()
-            if key != "format"
+            if key not in {"default", "format"}
         }
+        properties = sanitized.get("properties")
+        if isinstance(properties, dict):
+            sanitized["required"] = list(properties.keys())
+            sanitized["additionalProperties"] = False
+        return sanitized
     if isinstance(value, list):
         return [_sanitize_perplexity_json_schema(item) for item in value]
     return value

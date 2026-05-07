@@ -783,6 +783,43 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert '"format"' not in schema_text
         assert "homepage_url" in response_format["json_schema"]["schema"]["properties"]
 
+    def test_perplexity_response_format_requires_optional_fields(self):
+        """Perplexity requires every property to appear in strict required arrays."""
+
+        class ProviderHeadcount(BaseModel):
+            provider_headcount_estimate: Optional[int] = None
+
+        response_format = csv_to_llm._perplexity_response_format(
+            ProviderHeadcount,
+            "ProviderHeadcount",
+        )
+        schema = response_format["json_schema"]["schema"]
+        schema_text = json.dumps(schema)
+
+        assert schema["required"] == ["provider_headcount_estimate"]
+        assert schema["additionalProperties"] is False
+        assert '"default"' not in schema_text
+
+    def test_perplexity_response_format_requires_nested_object_fields(self):
+        """Nested object schemas should also satisfy Perplexity strict mode."""
+
+        class HeadcountDetail(BaseModel):
+            estimate: Optional[int] = None
+
+        class ProviderHeadcount(BaseModel):
+            detail: HeadcountDetail
+
+        response_format = csv_to_llm._perplexity_response_format(
+            ProviderHeadcount,
+            "ProviderHeadcount",
+        )
+        schema = response_format["json_schema"]["schema"]
+        nested_schema = schema["$defs"]["HeadcountDetail"]
+
+        assert schema["required"] == ["detail"]
+        assert nested_schema["required"] == ["estimate"]
+        assert nested_schema["additionalProperties"] is False
+
     def test_perplexity_structured_output_uses_cache(self, sample_pydantic_model):
         """Repeated Perplexity structured calls should reuse the joblib cache."""
         config = csv_to_llm.build_structured_output_config(
