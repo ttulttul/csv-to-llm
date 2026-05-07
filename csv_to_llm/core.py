@@ -24,6 +24,7 @@ from colorama import Fore, Style, init
 from openai import OpenAI
 from perplexity import Perplexity
 from pydantic import BaseModel, create_model
+from pydantic.errors import PydanticUndefinedAnnotation
 from .embeddings import get_embedding
 
 # Initialize colorama for cross-platform colored output
@@ -345,7 +346,7 @@ def _find_pydantic_model_class(module, class_name: Optional[str]) -> Type[BaseMo
     if class_name:
         for candidate in candidates:
             if candidate.__name__ == class_name:
-                return candidate
+                return _rebuild_pydantic_model_class(candidate, module)
         raise ValueError(
             f"Pydantic model '{class_name}' was not found in module '{module.__name__}'"
         )
@@ -358,7 +359,39 @@ def _find_pydantic_model_class(module, class_name: Optional[str]) -> Type[BaseMo
             "Multiple Pydantic BaseModel subclasses found. Specify --pydantic-model-class explicitly."
         )
 
-    return candidates[0]
+    return _rebuild_pydantic_model_class(candidates[0], module)
+
+
+def _pydantic_rebuild_namespace(module) -> Dict[str, Any]:
+    """Return names commonly needed to resolve postponed model annotations."""
+
+    namespace = {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+        "Optional": Optional,
+        "Tuple": Tuple,
+        "Type": Type,
+        "Union": Union,
+        "BaseModel": BaseModel,
+    }
+    namespace.update(vars(module))
+    return namespace
+
+
+def _rebuild_pydantic_model_class(model_cls: Type[BaseModel], module) -> Type[BaseModel]:
+    """Resolve postponed annotations on a dynamically imported Pydantic model."""
+
+    try:
+        model_cls.model_rebuild(_types_namespace=_pydantic_rebuild_namespace(module))
+    except PydanticUndefinedAnnotation as error:
+        logger.error(
+            "Unable to resolve annotations for Pydantic model '%s': %s",
+            model_cls.__name__,
+            error,
+        )
+        raise
+    return model_cls
 
 
 @lru_cache(maxsize=None)

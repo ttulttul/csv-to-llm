@@ -60,13 +60,43 @@ def _sanitize_identifier(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def _normalize_auto_model_code(code: str) -> str:
+    """Add common imports needed by provider-generated Pydantic model code."""
+
+    normalized_code = code.strip()
+    required_imports = [
+        "from typing import Any, Dict, List, Optional, Union",
+        "from pydantic import BaseModel, Field",
+    ]
+    missing_imports = [
+        import_line
+        for import_line in required_imports
+        if import_line not in normalized_code
+    ]
+    if not missing_imports:
+        return normalized_code
+
+    lines = normalized_code.splitlines()
+    insert_at = 0
+    while insert_at < len(lines) and lines[insert_at].startswith("from __future__ import "):
+        insert_at += 1
+    if insert_at < len(lines) and lines[insert_at] == "":
+        insert_at += 1
+
+    updated_lines = lines[:insert_at] + missing_imports + [""] + lines[insert_at:]
+    return "\n".join(updated_lines)
+
+
 def _ensure_python_file(code: str, class_name: str, directory: str) -> str:
+    """Write generated Pydantic code to a stable auto-mode model file."""
+
     os.makedirs(directory, exist_ok=True)
     module_name = _sanitize_identifier(class_name.lower(), "auto_model")
     file_path = os.path.join(directory, f"{module_name}.py")
+    normalized_code = _normalize_auto_model_code(code)
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write(code.strip())
-        if not code.endswith("\n"):
+        f.write(normalized_code)
+        if not normalized_code.endswith("\n"):
             f.write("\n")
     return file_path
 

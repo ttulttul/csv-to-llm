@@ -185,6 +185,7 @@ Options:
 - With `--provider perplexity`, schema design and structured extraction use the Perplexity Responses API preset from `--model`, defaulting to `pro-search`.
 - `--model-websearch` is available with OpenAI and Perplexity auto mode. Any manual prompt or Pydantic arguments are ignored/forbidden in auto mode.
 - With `--verbose`, auto mode prints the generated prompt template before row processing starts.
+- Auto-generated Pydantic model files are written next to the input CSV under `.csv_to_llm_auto/` and include common typing imports so optional fields can be validated during structured extraction.
 
 ### Caching
 

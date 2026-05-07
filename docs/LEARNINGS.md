@@ -11,3 +11,4 @@
 - 2026-05-05: Perplexity structured output uses the official `perplexityai` SDK, `responses.create`, and JSON Schema `response_format`, then validates `response.output_text` through the requested Pydantic model.
 - 2026-05-05: Auto mode needs provider-aware schema design because Perplexity structured extraction expects a Perplexity-generated compatible Pydantic schema and preset model before the normal row-processing pipeline starts.
 - 2026-05-05: Structured-output caching should store raw JSON and re-validate through the requested Pydantic model on each read, avoiding pickled SDK clients or dynamic model instances in the cache.
+- 2026-05-07: Provider-generated auto-mode schemas may use postponed annotations like `Optional[int]` without importing `Optional`; generated files now include common typing imports and the dynamic Pydantic loader rebuilds models with a fallback typing namespace.

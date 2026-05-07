@@ -9,6 +9,7 @@ import sys
 import json
 from dataclasses import replace
 from enum import Enum
+from typing import Optional
 from pydantic import BaseModel, Field, HttpUrl
 
 # Import the module under test
@@ -35,6 +36,7 @@ def clear_llm_caches():
     ]
     for cached_function in cached_functions:
         cached_function.clear()
+    csv_to_llm._get_pydantic_model_class.cache_clear()
     yield
 
 
@@ -956,6 +958,24 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
         assert category_config.output_field == "content_category"
         assert broad_config.output_field == "category"
 
+    def test_pydantic_loader_rebuilds_common_typing_annotations(self, temp_dir):
+        """Generated schemas with postponed Optional annotations should load."""
+        model_path = os.path.join(temp_dir, "provider_headcount_model.py")
+        with open(model_path, "w", encoding="utf-8") as f:
+            f.write(
+                "from __future__ import annotations\n"
+                "from pydantic import BaseModel\n\n"
+                "class ProviderHeadcountModel(BaseModel):\n"
+                "    employee_count: Optional[int]\n"
+            )
+
+        model_cls = csv_to_llm._get_pydantic_model_class(
+            model_path,
+            "ProviderHeadcountModel",
+        )
+
+        assert model_cls.model_fields["employee_count"].annotation == Optional[int]
+
     def test_column_prefix_requires_pydantic_model(self, sample_csv, output_csv_path):
         """Providing a prefix without a Pydantic model should raise."""
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test_key'}):
@@ -1284,6 +1304,24 @@ class TestAutoMode:
         parse_kwargs = mock_client.responses.parse.call_args.kwargs
         assert parse_kwargs["model"] == "gpt-test"
         assert parse_kwargs["tools"] == [{"type": "web_search"}]
+
+    def test_run_auto_mode_writes_common_typing_imports(self, temp_dir):
+        """Auto-generated model files should include common typing imports."""
+        model_path = csv_to_llm_auto._ensure_python_file(
+            "from __future__ import annotations\n"
+            "from pydantic import BaseModel\n\n"
+            "class ProviderHeadcountModel(BaseModel):\n"
+            "    employee_count: Optional[int]\n",
+            "ProviderHeadcountModel",
+            temp_dir,
+        )
+
+        with open(model_path, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        assert "from typing import Any, Dict, List, Optional, Union" in code
+        assert "from pydantic import BaseModel, Field" in code
+        assert code.startswith("from __future__ import annotations\nfrom typing")
 
     @patch('csv_to_llm.auto.OpenAI')
     def test_run_auto_mode_openai_uses_cache(self, mock_openai, temp_dir):
