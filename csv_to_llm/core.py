@@ -1046,6 +1046,16 @@ def _flatten_structured_fields(value: Any, prefix: str) -> Dict[str, str]:
     return {prefix.rstrip("_"): _serialize_structured_value(value)}
 
 
+def _ensure_assignable_column(df: pd.DataFrame, column_name: str) -> None:
+    """Ensure a DataFrame column can safely receive string-like LLM outputs."""
+
+    if column_name not in df.columns:
+        df[column_name] = pd.Series(pd.NA, index=df.index, dtype="object")
+        return
+    if df[column_name].dtype != "object":
+        df[column_name] = df[column_name].astype("object")
+
+
 def invoke_with_retries(max_retries: int, request_fn: Callable[[int], str]) -> str:
     """Execute request_fn with retry semantics. request_fn receives the attempt index."""
 
@@ -1473,8 +1483,7 @@ def process_csv_with_claude(
         )
 
     # Create the output column if it doesn't exist
-    if output_column not in df.columns:
-        df[output_column] = pd.NA # Use pandas NA for better type handling
+    _ensure_assignable_column(df, output_column)
 
     # Identify rows to process (where output column is null/NA)
     rows_to_process_indices = df[df[output_column].isna()].index
@@ -1592,8 +1601,7 @@ def process_csv_with_claude(
                     extra_fields = response_payload.get("extra_fields")
                     if extra_fields:
                         for col_name, value in extra_fields.items():
-                            if col_name not in df.columns:
-                                df[col_name] = pd.NA
+                            _ensure_assignable_column(df, col_name)
                             df.at[idx, col_name] = value
                     processed_count += 1
             except Exception as exc:
@@ -1733,8 +1741,7 @@ def process_csv_with_claude(
                     df.at[task.index, output_column] = output_value
                     if extra_fields:
                         for col_name, value in extra_fields.items():
-                            if col_name not in df.columns:
-                                df[col_name] = pd.NA
+                            _ensure_assignable_column(df, col_name)
                             df.at[task.index, col_name] = value
                     processed_count += 1
                     df.to_csv(output_csv_path, index=False)
@@ -1803,8 +1810,7 @@ def process_csv_with_embeddings(
     if missing:
         raise ValueError(f"Missing required columns in CSV: {', '.join(missing)}")
 
-    if output_column not in df.columns:
-        df[output_column] = pd.NA
+    _ensure_assignable_column(df, output_column)
 
     rows_to_process = df[df[output_column].isna()].index
     total = len(rows_to_process)

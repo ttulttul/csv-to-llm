@@ -509,6 +509,41 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             assert df.loc[0, 'response'] == "Category"
 
     @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
+    def test_existing_float_output_column_accepts_structured_string(self, temp_dir, sample_pydantic_model):
+        """Blank existing output columns should not reject string structured values."""
+        input_path = os.path.join(temp_dir, "float_output.csv")
+        output_path = os.path.join(temp_dir, "float_output_result.csv")
+        pd.DataFrame({
+            "description": ["Company"],
+            "response": [float("nan")],
+        }).to_csv(input_path, index=False)
+
+        read_back = pd.read_csv(input_path)
+        assert str(read_back["response"].dtype) == "float64"
+
+        with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
+            class Dummy(BaseModel):
+                category: str = "221000"
+                explanation: str = "Because"
+
+            mock_structured.return_value = Dummy()
+
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=input_path,
+                output_csv_path=output_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_field="category",
+                test_first_row=True,
+            )
+
+        df = pd.read_csv(output_path, dtype={"response": "string"})
+        assert df.loc[0, "response"] == "221000"
+
+    @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
     def test_structured_output_column_prefix(self, sample_csv, output_csv_path, sample_pydantic_model):
         """Structured runs can populate prefixed columns for every field."""
         with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
@@ -536,6 +571,42 @@ class TestProcessCsvWithClaude(TestCsvToLlm):
             assert response_payload["explanation"] == "Because"
             assert df.loc[0, 'llm_category'] == "Category"
             assert df.loc[0, 'llm_explanation'] == "Because"
+
+    @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
+    def test_existing_float_prefixed_column_accepts_structured_string(self, temp_dir, sample_pydantic_model):
+        """Existing generated columns should accept string values after resume."""
+        input_path = os.path.join(temp_dir, "float_prefixed.csv")
+        output_path = os.path.join(temp_dir, "float_prefixed_result.csv")
+        pd.DataFrame({
+            "description": ["Company"],
+            "response": [float("nan")],
+            "llm_category": [float("nan")],
+        }).to_csv(input_path, index=False)
+
+        read_back = pd.read_csv(input_path)
+        assert str(read_back["llm_category"].dtype) == "float64"
+
+        with patch('csv_to_llm.core.call_openai_structured') as mock_structured:
+            class Dummy(BaseModel):
+                category: str = "221000"
+                explanation: str = "Because"
+
+            mock_structured.return_value = Dummy()
+
+            csv_to_llm.process_csv_with_claude(
+                input_csv_path=input_path,
+                output_csv_path=output_path,
+                prompt_template="Categorize: {description}",
+                output_column="response",
+                model="gpt-4o-mini",
+                pydantic_model_path=sample_pydantic_model,
+                pydantic_model_class="EmailCategory",
+                pydantic_model_column_prefix="llm_",
+                test_first_row=True,
+            )
+
+        df = pd.read_csv(output_path, dtype={"llm_category": "string"})
+        assert df.loc[0, "llm_category"] == "221000"
 
     @patch.dict(os.environ, {'OPENAI_API_KEY': 'test_openai_key', 'ANTHROPIC_API_KEY': ''})
     def test_structured_output_column_prefix_flattens_nested_fields(self, sample_csv, output_csv_path, nested_pydantic_model):

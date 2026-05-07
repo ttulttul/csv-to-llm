@@ -187,6 +187,7 @@ Options:
 - With `--verbose`, auto mode prints the generated prompt template before row processing starts.
 - Auto-generated Pydantic model files are written next to the input CSV under `.csv_to_llm_auto/` and include common typing imports so optional fields can be validated during structured extraction.
 - Auto mode validates the generated primary field against the generated model and repairs obvious mismatches before row processing starts.
+- Existing blank output columns are normalized before assignment so resumed runs can write string, JSON, or error values even when pandas inferred a numeric dtype.
 - Perplexity structured schemas are normalized for strict validation, including optional fields and nested objects.
 
 ### Caching
