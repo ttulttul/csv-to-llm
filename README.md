@@ -191,6 +191,20 @@ Options:
 - Auto-generated validators are normalized for Pydantic v2 when providers emit common v1-style `values.get(...)` field validator code.
 - Perplexity structured schemas are normalized for strict validation, including optional fields and nested objects.
 
+### Google Sheets Apps Script
+
+The `apps_script/` folder contains a standalone Google Apps Script version for
+Google Sheets custom functions. After installing the script and setting
+`PERPLEXITY_API_KEY`, you can call Perplexity directly from cells:
+
+```text
+=PERPLEXITY("What is this company's homepage URL? The company name is " & A2, TRUE)
+```
+
+The folder also includes `PERPLEXITY_AUTO(headers, sample_rows, input_row,
+instruction)`, which adapts the CLI auto-mode idea to Sheets ranges by using
+headers and sample rows as context for a structured Perplexity result.
+
 ### Caching
 
 LLM calls are cached automatically in `./llm_cache` using joblib. The cache covers plain text generation, Pydantic structured outputs, iterative Pydantic field extraction, and auto-mode schema design. Retries after a failed or empty response bypass the cache for the retry attempt. Embeddings are not cached by this layer.
