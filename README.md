@@ -204,6 +204,8 @@ Google Sheets custom functions. After installing the script and setting
 The folder also includes `PERPLEXITY_AUTO(headers, sample_rows, input_row,
 instruction)`, which adapts the CLI auto-mode idea to Sheets ranges by using
 headers and sample rows as context for a structured Perplexity result.
+Apps Script responses are cached with `CacheService` by default for six hours,
+and the cache duration can be changed with `setPerplexityCacheSeconds`.
 
 ### Caching
 

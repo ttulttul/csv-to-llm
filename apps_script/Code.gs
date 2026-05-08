@@ -2,9 +2,12 @@ const PERPLEXITY_ENDPOINT = 'https://api.perplexity.ai/v1/agent';
 const DEFAULT_PERPLEXITY_MODEL = 'openai/gpt-5.4';
 const DEFAULT_MAX_OUTPUT_TOKENS = 500;
 const DEFAULT_CACHE_SECONDS = 21600;
+const MAX_CACHE_SECONDS = 21600;
+const CACHE_VALUE_SOFT_LIMIT = 90000;
 const SCRIPT_PROPERTY_API_KEY = 'PERPLEXITY_API_KEY';
 const SCRIPT_PROPERTY_MODEL = 'PERPLEXITY_MODEL';
 const SCRIPT_PROPERTY_PRESET = 'PERPLEXITY_PRESET';
+const SCRIPT_PROPERTY_CACHE_SECONDS = 'PERPLEXITY_CACHE_SECONDS';
 
 /**
  * Calls Perplexity from a Google Sheets cell.
@@ -64,6 +67,7 @@ function onOpen() {
     .addItem('Set Perplexity API key', 'promptForPerplexityApiKey')
     .addItem('Set Perplexity model', 'promptForPerplexityModel')
     .addItem('Set Perplexity preset', 'promptForPerplexityPreset')
+    .addItem('Set cache duration', 'promptForPerplexityCacheSeconds')
     .addToUi();
 }
 
@@ -139,6 +143,24 @@ function promptForPerplexityPreset() {
 }
 
 /**
+ * Prompts for and stores the CacheService TTL in seconds.
+ */
+function promptForPerplexityCacheSeconds() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Cache duration',
+    'Enter seconds to cache LLM responses. Use 0 to disable. Maximum: ' + MAX_CACHE_SECONDS + '.',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  setPerplexityCacheSeconds(response.getResponseText());
+  ui.alert('Perplexity cache duration saved.');
+}
+
+/**
  * Stores the Perplexity API key without using the spreadsheet UI.
  *
  * @param {string} apiKey Perplexity API key.
@@ -185,6 +207,16 @@ function setPerplexityPreset(preset) {
 }
 
 /**
+ * Stores the CacheService TTL in seconds.
+ *
+ * @param {number|string} seconds Cache duration in seconds. Set 0 to disable.
+ */
+function setPerplexityCacheSeconds(seconds) {
+  const value = parseCacheSeconds_(seconds);
+  PropertiesService.getScriptProperties().setProperty(SCRIPT_PROPERTY_CACHE_SECONDS, String(value));
+}
+
+/**
  * Calls Perplexity and returns plain text.
  *
  * @param {string} promptText Prompt text.
@@ -198,8 +230,7 @@ function callPerplexityText_(promptText, useWebSearch) {
     maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS
   });
 
-  const response = fetchPerplexityWithCache_(payload);
-  const outputText = extractOutputText_(response);
+  const outputText = fetchPerplexityOutputTextWithCache_(payload);
   if (!outputText) {
     throw new Error('Perplexity returned an empty response.');
   }
@@ -242,8 +273,8 @@ function callPerplexityAuto_(headers, sampleRows, inputRow, instruction, useWebS
     responseFormat: buildAutoResponseFormat_()
   });
 
-  const response = fetchPerplexityWithCache_(payload);
-  return parseAutoResponse_(extractOutputText_(response));
+  const outputText = fetchPerplexityOutputTextWithCache_(payload);
+  return parseAutoResponse_(outputText);
 }
 
 /**
@@ -282,22 +313,39 @@ function buildPerplexityPayload_(input, options) {
 }
 
 /**
- * Fetches Perplexity with CacheService-backed memoization.
+ * Fetches final Perplexity output text with CacheService-backed memoization.
  *
  * @param {Object} payload Agent API request payload.
- * @return {Object} Parsed response body.
+ * @return {string} Final output text.
  */
-function fetchPerplexityWithCache_(payload) {
+function fetchPerplexityOutputTextWithCache_(payload) {
+  const cacheSeconds = getCacheSeconds_();
+  if (cacheSeconds === 0) {
+    return fetchPerplexityOutputText_(payload);
+  }
+
   const cache = CacheService.getScriptCache();
   const cacheKey = buildCacheKey_(payload);
   const cached = cache.get(cacheKey);
-  if (cached) {
-    return JSON.parse(cached);
+  if (cached !== null) {
+    return cached;
   }
 
-  const response = fetchPerplexity_(payload);
-  cache.put(cacheKey, JSON.stringify(response), DEFAULT_CACHE_SECONDS);
-  return response;
+  const outputText = fetchPerplexityOutputText_(payload);
+  if (outputText.length <= CACHE_VALUE_SOFT_LIMIT) {
+    cache.put(cacheKey, outputText, cacheSeconds);
+  }
+  return outputText;
+}
+
+/**
+ * Fetches Perplexity and extracts final output text.
+ *
+ * @param {Object} payload Agent API request payload.
+ * @return {string} Final output text.
+ */
+function fetchPerplexityOutputText_(payload) {
+  return extractOutputText_(fetchPerplexity_(payload)).trim();
 }
 
 /**
@@ -588,6 +636,35 @@ function normalizeCellValue_(value) {
  */
 function getScriptProperty_(name) {
   return PropertiesService.getScriptProperties().getProperty(name) || '';
+}
+
+/**
+ * Reads the configured cache TTL in seconds.
+ *
+ * @return {number} Cache duration in seconds.
+ */
+function getCacheSeconds_() {
+  const rawValue = getScriptProperty_(SCRIPT_PROPERTY_CACHE_SECONDS);
+  if (!rawValue) {
+    return DEFAULT_CACHE_SECONDS;
+  }
+
+  return parseCacheSeconds_(rawValue);
+}
+
+/**
+ * Parses and validates a CacheService TTL value.
+ *
+ * @param {number|string} seconds Cache duration in seconds.
+ * @return {number} Valid cache duration.
+ */
+function parseCacheSeconds_(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0 || value > MAX_CACHE_SECONDS) {
+    throw new Error('Cache seconds must be a number from 0 to ' + MAX_CACHE_SECONDS + '.');
+  }
+
+  return Math.floor(value);
 }
 
 /**

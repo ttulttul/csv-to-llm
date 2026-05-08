@@ -23,6 +23,11 @@ spreadsheet-facing Perplexity workflow.
 You can also run `promptForPerplexityPreset` if you prefer using a Perplexity
 preset such as `pro-search` instead of a model name.
 
+By default, responses are cached for six hours with Google Apps Script
+`CacheService`. Use `promptForPerplexityCacheSeconds` or
+`setPerplexityCacheSeconds(seconds)` to change the duration. Set the value to
+`0` to disable response caching.
+
 ## Custom Functions
 
 Plain prompt:
@@ -55,15 +60,18 @@ with the same arguments to return the full JSON payload:
 }
 ```
 
-Both functions use `CacheService` for six-hour request caching keyed by the
-full Perplexity payload. This reduces duplicate paid API calls when Google
-Sheets recalculates unchanged formulas.
+Both functions use `CacheService` request caching keyed by the full Perplexity
+payload. The script caches the extracted LLM output text, not the full API
+response body, to keep cache entries small. This reduces duplicate paid API
+calls when Google Sheets recalculates unchanged formulas.
 
 ## Notes
 
 - Google Sheets custom functions must finish quickly. For large batches, prefer
   filling a small number of cells at a time or use the Python CLI in this repo.
 - Custom functions cannot write outside their own result cell or spill range.
+- Apps Script cache entries are temporary and may be evicted before their
+  configured duration.
 - The first structured-output call for a new JSON schema can be slower while
   Perplexity prepares the schema.
 - Perplexity tool use can add separate `web_search` and `fetch_url` charges.

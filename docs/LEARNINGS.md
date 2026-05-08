@@ -17,3 +17,4 @@
 - 2026-05-07: Pandas may infer existing blank output columns as `float64`, then reject string-like LLM results during resume. Output and generated structured columns now coerce to object dtype before assignment.
 - 2026-05-08: Auto-generated Pydantic validators can mix v2 `@field_validator` with v1-style `values.get(...)`; Pydantic v2 passes `ValidationInfo`, so auto model normalization now rewrites that common pattern to `info.data.get(...)`.
 - 2026-05-08: Google Sheets custom functions are a good lightweight interface for one-cell Perplexity calls, but the Apps Script implementation should stay independent from the Python/Pydantic pipeline because custom functions have execution-time and side-effect limits.
+- 2026-05-08: Apps Script LLM response caching should store the final output text rather than the full provider response so `CacheService` entries stay small and custom functions can reuse exactly the spreadsheet-visible value.
