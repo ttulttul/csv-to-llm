@@ -15,3 +15,4 @@
 - 2026-05-07: Perplexity structured outputs require every object schema to set `required` to every key in `properties`, even nullable or defaulted Pydantic fields; schema normalization now applies that strict shape recursively.
 - 2026-05-07: Auto-mode providers may return a `primary_field` that names the intended output column rather than an actual Pydantic model field. Auto mode now validates that field against the generated model and repairs clear semantic matches such as headcount employee-count fields.
 - 2026-05-07: Pandas may infer existing blank output columns as `float64`, then reject string-like LLM results during resume. Output and generated structured columns now coerce to object dtype before assignment.
+- 2026-05-08: Auto-generated Pydantic validators can mix v2 `@field_validator` with v1-style `values.get(...)`; Pydantic v2 passes `ValidationInfo`, so auto model normalization now rewrites that common pattern to `info.data.get(...)`.

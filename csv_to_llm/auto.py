@@ -68,9 +68,10 @@ def _normalize_auto_model_code(code: str) -> str:
     """Add common imports needed by provider-generated Pydantic model code."""
 
     normalized_code = code.strip()
+    normalized_code = _normalize_pydantic_v2_validator_code(normalized_code)
     required_imports = [
         "from typing import Any, Dict, List, Optional, Union",
-        "from pydantic import BaseModel, Field",
+        "from pydantic import BaseModel, Field, field_validator, model_validator",
     ]
     missing_imports = [
         import_line
@@ -89,6 +90,22 @@ def _normalize_auto_model_code(code: str) -> str:
 
     updated_lines = lines[:insert_at] + missing_imports + [""] + lines[insert_at:]
     return "\n".join(updated_lines)
+
+
+def _normalize_pydantic_v2_validator_code(code: str) -> str:
+    """Repair common provider-generated Pydantic v1 validator idioms."""
+
+    if "@field_validator" not in code or ".get(" not in code:
+        return code
+
+    normalized_code = re.sub(
+        r"(def\s+\w+\([^)]*?),\s*values(\s*\):)",
+        r"\1, info\2",
+        code,
+    )
+    if normalized_code == code:
+        return code
+    return normalized_code.replace("values.get(", "info.data.get(")
 
 
 def _ensure_python_file(code: str, class_name: str, directory: str) -> str:

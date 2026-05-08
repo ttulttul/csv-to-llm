@@ -1428,8 +1428,37 @@ class TestAutoMode:
             code = f.read()
 
         assert "from typing import Any, Dict, List, Optional, Union" in code
-        assert "from pydantic import BaseModel, Field" in code
+        assert "from pydantic import BaseModel, Field, field_validator, model_validator" in code
         assert code.startswith("from __future__ import annotations\nfrom typing")
+
+    def test_run_auto_mode_repairs_pydantic_v1_validator_values_argument(self, temp_dir):
+        """Generated Pydantic v1-style validators should run on Pydantic v2."""
+        model_path = csv_to_llm_auto._ensure_python_file(
+            "from typing import Optional\n"
+            "from pydantic import BaseModel, field_validator\n\n"
+            "class WebhostHomepageUrlModel(BaseModel):\n"
+            "    provider_homepage: Optional[str]\n"
+            "    provider_homepage_url: Optional[str] = None\n\n"
+            "    @field_validator('provider_homepage_url', mode='before')\n"
+            "    @classmethod\n"
+            "    def set_homepage_url(cls, v, values):\n"
+            "        if v:\n"
+            "            return v\n"
+            "        return values.get('provider_homepage')\n",
+            "WebhostHomepageUrlModel",
+            temp_dir,
+        )
+
+        model_cls = csv_to_llm._get_pydantic_model_class(
+            model_path,
+            "WebhostHomepageUrlModel",
+        )
+        parsed = model_cls.model_validate({
+            "provider_homepage": "https://example.com",
+            "provider_homepage_url": None,
+        })
+
+        assert parsed.provider_homepage_url == "https://example.com"
 
     @patch('csv_to_llm.auto.OpenAI')
     def test_run_auto_mode_openai_uses_cache(self, mock_openai, temp_dir):
